@@ -23,11 +23,11 @@ Last updated: 2026-04-15
 **Problem:** Client's save-loaded entities coexisted with host's network entities. Two copies of every NPC.
 **Fix:** Added CLEANING->SYNCING->ACTIVE state machine. `on_full_state()` collects all existing entity IDs (0-65534 scan), batched deletion at 50/frame, queued spawn processing at 20/frame.
 
-## Bug #3: Buffer Overflow on Full State (OPEN)
+## Bug #3: Buffer Overflow on Full State (FIXED)
 **Severity:** MEDIUM
 **File:** `lua-sync/mp_host_events.script` lines 310-361
 **Problem:** `send_full_state()` sends individual `ENTITY_SPAWN` messages per entity via reliable channel with no per-frame budget. With 2000+ tracked entities, all messages sent in one frame. GNS_MAX_MESSAGE_SIZE is 64KB per message (each spawn ~200 bytes, so individual messages are fine), but the GNS internal send buffer could overflow.
-**Fix:** Add per-frame cap to `send_full_state()` (e.g., 50 messages/frame), continue on next tick. Requires a coroutine or stateful continuation.
+**Fix:** Stateful continuation with per-connection cursor. `send_full_state()` sends the FULL_STATE header immediately (to trigger client CLEANING state), snapshots `_tracked_ids` into a stable per-connection array, and queues the work. `tick_full_state()` drives 50 entities/frame per connection from `mp_core.mp_update()` every frame (no rate limit). Environment state (weather/time) is sent after the last entity batch. `cancel_full_state(conn_id)` cleans up if a client disconnects mid-stream. With 2000 entities at 50/frame: ~40 frames (~0.67s at 60fps) to complete.
 
 ## Bug #4: ID Mapping Key Collisions (FIXED)
 **Severity:** HIGH

@@ -317,8 +317,10 @@ function mp_update()
         mp_client_state.client_tick()
     end
 
-    -- Host: send periodic snapshots
+    -- Host: stream full state to new clients (every frame, no rate limit) and
+    -- send periodic position snapshots to all clients
     if _is_host then
+        mp_host_events.tick_full_state()
         local now = time_global()
         if now - _last_snapshot_time >= _snapshot_interval_ms then
             mp_host_events.send_snapshots()
@@ -348,6 +350,10 @@ function mp_on_connection_event(evt)
 
     elseif evt.event_type == 2 then -- Disconnected
         printf("[GAMMA MP] Disconnection: %s", evt.info)
+        -- Host: cancel any in-progress full-state stream for this connection
+        if _is_host and evt.conn_id then
+            mp_host_events.cancel_full_state(evt.conn_id)
+        end
         if _is_client then
             -- Was fully connected, need full cleanup
             mp_disconnect()

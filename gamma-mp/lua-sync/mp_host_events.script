@@ -27,6 +27,11 @@ local _snapshot_cursor = 1
 -- Environment sync timer
 local _last_env_sync = nil
 
+-- Full state streaming state — per-connection cursor for multi-frame entity send.
+-- conn_id -> { ids = {entity id array snapshot}, cursor = int }
+local _full_state_pending = {}
+local _full_state_batch = 50  -- ENTITY_SPAWN messages per frame per connection
+
 -- ============================================================================
 -- Lazy init
 -- ============================================================================
@@ -365,23 +370,30 @@ end
 
 -- ============================================================================
 -- Full State Dump (for new client connections)
+-- Streamed over multiple frames: _full_state_batch entities per frame.
+-- send_full_state() sends the header and queues the work.
+-- tick_full_state() is called every frame from mp_core.mp_update() to drive it.
 -- ============================================================================
 
-function send_full_state(conn_id)
-    ensure_msg()
-    printf("[GAMMA MP] Sending full state to client %d", conn_id)
+--- Drive one frame of full-state streaming for a single connection.
+local function _tick_full_state_connection(conn_id)
+    local state = _full_state_pending[conn_id]
+    if not state then return end
 
     local sim = alife()
-    if not sim then return end
+    if not sim then
+        _full_state_pending[conn_id] = nil
+        return
+    end
 
-    -- Tell client to prepare for full state
-    mp_protocol.send_event(conn_id, MSG.FULL_STATE, {
-        entity_count = _tracked_count,
-    })
+    local sent = 0
+    local ids = state.ids
+    local cursor = state.cursor
 
-    -- Send all tracked entities using the registry (NOT linear scan)
-    local count = 0
-    for id, _ in pairs(_tracked_entities) do
+    while cursor <= #ids and sent < _full_state_batch do
+        local id = ids[cursor]
+        cursor = cursor + 1
+
         local se_obj = sim:object(id)
         if se_obj then
             local data = {
@@ -397,27 +409,74 @@ function send_full_state(conn_id)
             if se_obj.parent_id and se_obj.parent_id ~= 65535 then
                 data.parent_id = se_obj.parent_id
             end
-
             mp_protocol.send_event(conn_id, MSG.ENTITY_SPAWN, data)
-            count = count + 1
-        else
-            -- Stale entry, clean up
-            untrack_entity(id)
+            sent = sent + 1
         end
+        -- se_obj nil: entity despawned since snapshot — skip silently
     end
 
-    -- Send environment state
-    mp_protocol.send_event(conn_id, MSG.WEATHER_SYNC, {
-        preset = level.get_weather() or "default",
+    state.cursor = cursor
+
+    if cursor > #ids then
+        -- All entities streamed — append environment state and finish
+        mp_protocol.send_event(conn_id, MSG.WEATHER_SYNC, {
+            preset = level.get_weather() or "default",
+        })
+        mp_protocol.send_event(conn_id, MSG.TIME_SYNC, {
+            hours = level.get_time_hours(),
+            mins = level.get_time_minutes(),
+            factor = level.get_time_factor(),
+        })
+        _full_state_pending[conn_id] = nil
+        printf("[GAMMA MP] Full state stream complete to client %d", conn_id)
+    end
+end
+
+--- Begin streaming full world state to a newly connected client.
+--- Sends the FULL_STATE header immediately (so client enters CLEANING state),
+--- then queues entity spawns for batched delivery via tick_full_state().
+function send_full_state(conn_id)
+    ensure_msg()
+    printf("[GAMMA MP] Starting full state stream to client %d (%d entities)",
+        conn_id, _tracked_count)
+
+    -- Header: triggers CLEANING state on the client
+    mp_protocol.send_event(conn_id, MSG.FULL_STATE, {
+        entity_count = _tracked_count,
     })
 
-    mp_protocol.send_event(conn_id, MSG.TIME_SYNC, {
-        hours = level.get_time_hours(),
-        mins = level.get_time_minutes(),
-        factor = level.get_time_factor(),
-    })
+    -- Snapshot _tracked_ids into a stable per-connection array.
+    -- We walk the snapshot across frames; swap-remove churn on the live
+    -- _tracked_ids array during streaming won't corrupt our cursor.
+    -- Entities that despawn before being sent are skipped via sim:object() nil check.
+    local snapshot = {}
+    for i = 1, #_tracked_ids do
+        snapshot[i] = _tracked_ids[i]
+    end
 
-    printf("[GAMMA MP] Full state sent: %d entities", count)
+    _full_state_pending[conn_id] = { ids = snapshot, cursor = 1 }
+
+    -- Send the first batch immediately — don't make the client wait a full frame
+    _tick_full_state_connection(conn_id)
+end
+
+--- Drive one frame of full-state streaming for all pending connections.
+--- Called every frame from mp_core.mp_update() while hosting.
+function tick_full_state()
+    if not next(_full_state_pending) then return end  -- fast path: nothing pending
+    -- Removing _full_state_pending[conn_id] inside the loop is safe:
+    -- Lua 5.1 allows clearing the current key during pairs() traversal.
+    for conn_id in pairs(_full_state_pending) do
+        _tick_full_state_connection(conn_id)
+    end
+end
+
+--- Cancel a pending full-state stream (client disconnected mid-stream).
+function cancel_full_state(conn_id)
+    if _full_state_pending[conn_id] then
+        _full_state_pending[conn_id] = nil
+        printf("[GAMMA MP] Full state stream cancelled for client %d", conn_id)
+    end
 end
 
 -- ============================================================================
