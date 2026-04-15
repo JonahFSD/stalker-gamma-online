@@ -388,10 +388,14 @@ function on_time_sync(data)
         local delta_h = data.hours - cur_h
         local delta_m = data.mins - cur_m
 
+        -- Wraparound for backward time: change_game_time only goes forward,
+        -- so add 24h when the target is behind current time
+        if delta_h < 0 or (delta_h == 0 and delta_m < 0) then
+            delta_h = delta_h + 24
+        end
+
         if delta_h ~= 0 or delta_m ~= 0 then
-            if delta_h > 0 or (delta_h == 0 and delta_m > 0) then
-                level.change_game_time(0, delta_h, delta_m)
-            end
+            level.change_game_time(0, delta_h, delta_m)
         end
     end
 end

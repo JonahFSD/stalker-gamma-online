@@ -95,8 +95,8 @@ Last updated: 2026-04-15
 **Problem:** Weather sync sent every 5 seconds via reliable channel. If client connects between syncs, they see wrong weather for up to 5 seconds. Not critical — `send_full_state()` includes weather (line 350).
 **Fix:** Increase frequency or send weather in every snapshot. Low priority.
 
-## Bug #15: Time Sync Direction (OPEN)
+## Bug #15: Time Sync Direction (FIXED)
 **Severity:** HIGH
 **File:** `lua-sync/mp_client_state.script` lines 348-369
 **Problem:** Fallback path (no `set_game_time`) uses `level.change_game_time()` which only goes forward. If host time is behind client, sync fails until host catches up. Primary path uses `level.set_game_time()` (our engine patch) which handles backward via 24h wraparound.
-**Fix:** The engine patch (`level_script.cpp.patch`) already handles this with `delta += 86400` wraparound. Only the fallback path is broken, and it only triggers if engine patch is missing. Add a startup check: if `level.set_game_time` doesn't exist, warn in console.
+**Fix:** Added 24h wraparound to fallback path: when delta is negative, adds 24 hours so `change_game_time()` advances forward to the correct time. Added startup warning in `mp_core.script` `on_game_start()` if `level.set_game_time` is missing.

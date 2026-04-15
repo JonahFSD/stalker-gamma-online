@@ -494,5 +494,9 @@ function on_game_start()
         return _is_host or _is_client
     end
 
+    if not level.set_game_time then
+        printf("[GAMMA MP] WARNING: level.set_game_time not found — engine patch missing. Time sync will use fallback (forward-only wraparound).")
+    end
+
     printf("[GAMMA MP] Core module loaded")
 end
