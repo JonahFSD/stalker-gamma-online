@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<w>
+	<!-- Main background panel — centered, 400x340 -->
+	<background x="300" y="220" width="400" height="340" stretch="1">
+		<texture>ui_inGame2_hint_wnd_main_window</texture>
+	</background>
+
+	<!-- Title -->
+	<title x="310" y="228" width="380" height="30">
+		<text font="graffiti22" r="238" g="155" b="23" a="255" align="c">GAMMA Multiplayer</text>
+	</title>
+
+	<!-- Status line -->
+	<status x="310" y="260" width="380" height="20">
+		<text font="letterica16" r="200" g="200" b="200" a="255" align="c">Status: Idle</text>
+	</status>
+
+	<!-- Info line (clients, entities, etc) -->
+	<info x="310" y="280" width="380" height="20">
+		<text font="letterica16" r="150" g="150" b="150" a="255" align="c"></text>
+	</info>
+
+	<!-- IP input label -->
+	<ip_label x="320" y="310" width="60" height="22">
+		<text font="letterica16" r="200" g="200" b="200" a="255">IP:</text>
+	</ip_label>
+
+	<!-- IP input field -->
+	<ip_input x="370" y="310" width="200" height="22">
+		<text font="letterica16" r="255" g="255" b="255" />
+		<texture>ui_inGame2_edit_box_2</texture>
+	</ip_input>
+
+	<!-- Port input label -->
+	<port_label x="580" y="310" width="40" height="22">
+		<text font="letterica16" r="200" g="200" b="200" a="255">Port:</text>
+	</port_label>
+
+	<!-- Port input field -->
+	<port_input x="620" y="310" width="70" height="22">
+		<text font="letterica16" r="255" g="255" b="255" />
+		<texture>ui_inGame2_edit_box_2</texture>
+	</port_input>
+
+	<!-- Buttons row 1 -->
+	<btn_host x="320" y="350" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Host</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_host>
+
+	<btn_connect x="505" y="350" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Connect</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_connect>
+
+	<!-- Buttons row 2 -->
+	<btn_disconnect x="320" y="390" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Disconnect</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_disconnect>
+
+	<btn_stop x="505" y="390" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Stop Host</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_stop>
+
+	<!-- Buttons row 3 -->
+	<btn_status x="320" y="430" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Status</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_status>
+
+	<btn_shutdown x="505" y="430" width="175" height="30" stretch="1">
+		<text font="letterica18" align="c">Shutdown</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_shutdown>
+
+	<!-- Close button -->
+	<btn_close x="420" y="480" width="160" height="30" stretch="1">
+		<text font="letterica18" align="c">Close</text>
+		<texture>ui_button_ordinary</texture>
+	</btn_close>
+
+	<!-- Version -->
+	<version x="310" y="530" width="380" height="16">
+		<text font="letterica16" r="100" g="100" b="100" a="255" align="c">v0.1.0-alpha</text>
+	</version>
+</w>

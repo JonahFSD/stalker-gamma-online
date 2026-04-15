@@ -1,0 +1,269 @@
+--- mp_ui.script: GAMMA Multiplayer in-game menu
+--- Opens on F10. Provides Host/Connect/Disconnect/Status/Shutdown buttons
+--- with IP and port input fields.
+---
+--- Place in gamedata/scripts/
+--- XML layout: gamedata/configs/ui/ui_mp_menu.xml
+
+local GUI = nil  -- Singleton menu instance
+
+-- ============================================================================
+-- Menu Class
+-- ============================================================================
+
+class "UIMultiplayerMenu" (CUIScriptWnd)
+
+function UIMultiplayerMenu:__init() super()
+    self:InitControls()
+    self:InitCallbacks()
+end
+
+function UIMultiplayerMenu:__finalize()
+end
+
+function UIMultiplayerMenu:InitControls()
+    self:SetWndRect(Frect():set(0, 0, 1024, 768))
+    self:SetAutoDelete(true)
+
+    local xml = CScriptXmlInit()
+    xml:ParseFile("ui_mp_menu.xml")
+
+    -- Background
+    self.back = xml:InitStatic("background", self)
+
+    -- Title
+    self.title = xml:InitStatic("title", self.back)
+
+    -- Status and info lines
+    self.status = xml:InitStatic("status", self)
+    self.info = xml:InitStatic("info", self)
+
+    -- IP input
+    self.ip_label = xml:InitStatic("ip_label", self)
+    self.ip_input = xml:InitEditBox("ip_input", self)
+    self.ip_input:SetText("127.0.0.1")
+
+    -- Port input
+    self.port_label = xml:InitStatic("port_label", self)
+    self.port_input = xml:InitEditBox("port_input", self)
+    self.port_input:SetText("44140")
+
+    -- Buttons
+    self.btn_host = xml:Init3tButton("btn_host", self)
+    self:Register(self.btn_host, "btn_host")
+
+    self.btn_connect = xml:Init3tButton("btn_connect", self)
+    self:Register(self.btn_connect, "btn_connect")
+
+    self.btn_disconnect = xml:Init3tButton("btn_disconnect", self)
+    self:Register(self.btn_disconnect, "btn_disconnect")
+
+    self.btn_stop = xml:Init3tButton("btn_stop", self)
+    self:Register(self.btn_stop, "btn_stop")
+
+    self.btn_status = xml:Init3tButton("btn_status", self)
+    self:Register(self.btn_status, "btn_status")
+
+    self.btn_shutdown = xml:Init3tButton("btn_shutdown", self)
+    self:Register(self.btn_shutdown, "btn_shutdown")
+
+    self.btn_close = xml:Init3tButton("btn_close", self)
+    self:Register(self.btn_close, "btn_close")
+
+    -- Version
+    self.version = xml:InitStatic("version", self)
+end
+
+function UIMultiplayerMenu:InitCallbacks()
+    self:AddCallback("btn_host",       ui_events.BUTTON_CLICKED, self.OnHost, self)
+    self:AddCallback("btn_connect",    ui_events.BUTTON_CLICKED, self.OnConnect, self)
+    self:AddCallback("btn_disconnect", ui_events.BUTTON_CLICKED, self.OnDisconnect, self)
+    self:AddCallback("btn_stop",       ui_events.BUTTON_CLICKED, self.OnStopHost, self)
+    self:AddCallback("btn_status",     ui_events.BUTTON_CLICKED, self.OnStatus, self)
+    self:AddCallback("btn_shutdown",   ui_events.BUTTON_CLICKED, self.OnShutdown, self)
+    self:AddCallback("btn_close",      ui_events.BUTTON_CLICKED, self.OnClose, self)
+end
+
+-- ============================================================================
+-- Button Handlers
+-- ============================================================================
+
+function UIMultiplayerMenu:OnHost()
+    local port_str = self.port_input:GetText()
+    local port = tonumber(port_str) or 44140
+
+    if mp_core.is_host() then
+        self:SetStatus("Already hosting", "e8a020")
+        return
+    end
+
+    if mp_core.is_client() then
+        self:SetStatus("Disconnect first", "e02020")
+        return
+    end
+
+    local ok = mp_core.mp_host(port)
+    if ok then
+        self:SetStatus("Hosting on port " .. port, "20e040")
+        news_manager.send_tip(db.actor, "GAMMA MP hosting on port " .. port, nil, nil, 5000)
+    else
+        self:SetStatus("Failed to start host", "e02020")
+    end
+    self:RefreshInfo()
+end
+
+function UIMultiplayerMenu:OnConnect()
+    local ip = self.ip_input:GetText()
+    local port_str = self.port_input:GetText()
+    local port = tonumber(port_str) or 44140
+
+    if not ip or ip == "" then
+        self:SetStatus("Enter an IP address", "e02020")
+        return
+    end
+
+    if mp_core.is_client() then
+        self:SetStatus("Already connected", "e8a020")
+        return
+    end
+
+    if mp_core.is_host() then
+        self:SetStatus("Stop hosting first", "e02020")
+        return
+    end
+
+    local ok = mp_core.mp_connect(ip, port)
+    if ok then
+        self:SetStatus("Connecting to " .. ip .. ":" .. port .. "...", "20e040")
+        news_manager.send_tip(db.actor, "GAMMA MP connecting to " .. ip .. ":" .. port, nil, nil, 5000)
+    else
+        self:SetStatus("Failed to connect", "e02020")
+    end
+    self:RefreshInfo()
+end
+
+function UIMultiplayerMenu:OnDisconnect()
+    if not mp_core.is_client() then
+        self:SetStatus("Not connected", "e8a020")
+        return
+    end
+
+    mp_core.mp_disconnect()
+    self:SetStatus("Disconnected", "20e040")
+    news_manager.send_tip(db.actor, "Disconnected from host", nil, nil, 3000)
+    self:RefreshInfo()
+end
+
+function UIMultiplayerMenu:OnStopHost()
+    if not mp_core.is_host() then
+        self:SetStatus("Not hosting", "e8a020")
+        return
+    end
+
+    mp_core.mp_stop_host()
+    self:SetStatus("Hosting stopped", "20e040")
+    news_manager.send_tip(db.actor, "GAMMA MP hosting stopped", nil, nil, 3000)
+    self:RefreshInfo()
+end
+
+function UIMultiplayerMenu:OnStatus()
+    mp_core.mp_status()  -- Logs to console
+
+    if mp_core.is_host() then
+        local clients = gns.get_client_count()
+        local tracked = mp_host_events.get_tracked_count()
+        self:SetStatus("Hosting", "20e040")
+        self:SetInfo(clients .. " clients, " .. tracked .. " entities tracked")
+    elseif mp_core.is_client() then
+        local ip = mp_core.get_host_ip() or "?"
+        local port = mp_core.get_host_port() or 0
+        local entities = mp_client_state.get_entity_count()
+        local mappings = mp_client_state.get_id_map_count()
+        self:SetStatus("Connected to " .. ip .. ":" .. port, "20e040")
+        self:SetInfo(entities .. " entities, " .. mappings .. " ID mappings")
+    else
+        self:SetStatus("Idle — not connected", "c0c0c0")
+        self:SetInfo("")
+    end
+end
+
+function UIMultiplayerMenu:OnShutdown()
+    mp_core.mp_shutdown()
+    self:SetStatus("Shutdown complete", "c0c0c0")
+    self:SetInfo("")
+    news_manager.send_tip(db.actor, "GAMMA MP shutdown", nil, nil, 3000)
+end
+
+function UIMultiplayerMenu:OnClose()
+    self:HideDialog()
+    Unregister_UI("UIMultiplayerMenu")
+end
+
+-- ============================================================================
+-- UI Helpers
+-- ============================================================================
+
+function UIMultiplayerMenu:SetStatus(text, hex_color)
+    if self.status then
+        self.status:TextControl():SetText("Status: " .. text)
+    end
+end
+
+function UIMultiplayerMenu:SetInfo(text)
+    if self.info then
+        self.info:TextControl():SetText(text)
+    end
+end
+
+function UIMultiplayerMenu:RefreshInfo()
+    -- Auto-refresh status after an action
+    self:OnStatus()
+end
+
+-- ============================================================================
+-- Keyboard
+-- ============================================================================
+
+function UIMultiplayerMenu:OnKeyboard(dik, keyboard_action)
+    local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+    if res == false then
+        if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+            if dik == DIK_keys.DIK_ESCAPE then
+                self:OnClose()
+            end
+        end
+    end
+    return res
+end
+
+-- ============================================================================
+-- Update (refresh status while menu is open)
+-- ============================================================================
+
+function UIMultiplayerMenu:Update()
+    CUIScriptWnd.Update(self)
+end
+
+-- ============================================================================
+-- Global Open/Close (called from mp_core on F10)
+-- ============================================================================
+
+function open_menu()
+    if GUI and GUI:IsShown() then
+        GUI:OnClose()
+        return
+    end
+
+    GUI = UIMultiplayerMenu()
+    GUI:ShowDialog(true)
+    Register_UI("UIMultiplayerMenu", "mp_menu")
+
+    -- Auto-refresh status on open
+    GUI:OnStatus()
+end
+
+function close_menu()
+    if GUI and GUI:IsShown() then
+        GUI:OnClose()
+    end
+end
