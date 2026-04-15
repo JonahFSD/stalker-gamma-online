@@ -23,7 +23,7 @@ The host IS singleplayer running normally. Our code watches A-Life callbacks (sp
 All compiled and deployed:
 - AnomalyDX11.exe (patched, copied to AVX slot for MO2): `C:\ANOMALY\bin\`
 - gns_bridge.dll + 5 dependency DLLs: `C:\ANOMALY\bin\`
-- 5 Lua .script files: `C:\GAMMA\overwrite\gamedata\scripts\`
+- 6 Lua .script files: `C:\GAMMA\overwrite\gamedata\scripts\`
 - UI XML: `C:\GAMMA\overwrite\gamedata\configs\ui\`
 
 ---
@@ -38,7 +38,7 @@ Use this to jump directly to the right file. Don't grep for things that are list
 |------|---------|---------------|-----------|
 | `mp_core.script` | State machine, init/shutdown, update loop, save blocking, F10 keybind | `mp_init()`, `mp_host(port)`, `mp_connect(ip,port)`, `mp_activate_client_mode()`, `mp_on_connect_failed(reason)`, `mp_disconnect()`, `mp_update()`, `mp_on_connection_event(evt)`, `mp_shutdown()`, `block_client_saves()`, `restore_client_saves()`, `on_game_start()` | `_is_initialized`, `_is_host`, `_is_connecting`, `_is_client`, `_host_ip`, `_host_port` |
 | `mp_protocol.script` | Message serialization, dispatch | `serialize_event(type,data)`, `serialize_positions(type,entities)`, `deserialize(str)`, `on_message(conn_id,raw,size)`, `dispatch_client(type,data,conn)`, `dispatch_host(type,data,conn)`, `send_event()`, `broadcast_event()`, `send_snapshot()`, `broadcast_snapshot()` | `MSG` table (ES/ED/ER/SA/IC/WS/TS/FS/PE/EP/PP/PS) |
-| `mp_host_events.script` | Host-side: hooks callbacks, tracks entities, broadcasts events+snapshots | `register_callbacks()`, `unregister_callbacks()`, `build_entity_registry()`, `on_entity_register(se_obj,source_tag)`, `on_entity_unregister(se_obj)`, `on_npc_death(npc,killer)`, `send_snapshots()`, `send_environment_sync()`, `send_full_state(conn_id)` | `_tracked_entities` (id->true), `_tracked_count`, `_clients` (conn_id->data) |
+| `mp_host_events.script` | Host-side: hooks callbacks, tracks entities, broadcasts events+snapshots, streams full state, handles level transitions | `register_callbacks()`, `unregister_callbacks()`, `build_entity_registry()`, `on_entity_register(se_obj,source_tag)`, `on_entity_unregister(se_obj)`, `on_npc_death(npc,killer)`, `send_snapshots()`, `send_environment_sync()`, `send_full_state(conn_id)`, `tick_full_state()`, `cancel_full_state(conn_id)`, `on_host_level_load()` | `_tracked_entities` (id->true), `_tracked_count`, `_tracked_ids` (flat array), `_tracked_id_index` (id->pos), `_snapshot_cursor` (round-robin), `_full_state_pending` (conn->state), `_connected_clients`, `_last_level_name` |
 | `mp_client_state.script` | Client-side: applies host events, ID mapping, sync state machine | `resolve_id(host_id)`, `map_id(host,local)`, `unmap_id(host)`, `on_local_entity_registered(se_obj)`, `on_entity_spawn(data)`, `do_entity_spawn(data)`, `on_entity_death(data)`, `on_entity_despawn(data)`, `on_entity_positions(entities)`, `apply_entity_position(host_id,x,y,z,h)`, `on_full_state(data)`, `client_tick()`, `tick_cleanup()`, `tick_sync()` | `_host_to_local`, `_local_to_host`, `_network_entities`, `_pending_spawns` (key->list), `_pending_positions`, `_sync_state` (IDLE/CLEANING/SYNCING/ACTIVE), `_cleanup_ids`, `_spawn_queue` |
 | `mp_alife_guard.script` | Intercepts alife():create()/release() on client (Bug #11) | `install()`, `uninstall()`, `internal_create(sim,...)`, `internal_release(sim,...)`, `get_block_counts()` | `_orig_create`, `_orig_release`, `_installed` |
 | `mp_ui.script` | F10 in-game menu (Host/Connect/Disconnect/Status/Shutdown) | `UIMultiplayerMenu:InitControls()`, `OnHost()`, `OnConnect()`, `OnDisconnect()`, `OnStatus()`, `OnShutdown()`, `open_menu()`, `close_menu()` | `GUI` singleton |
@@ -83,6 +83,9 @@ Use this to jump directly to the right file. Don't grep for things that are list
 | `CLAUDE_CODE_TEST.md` | In-game test protocol |
 | `CLAUDE_CODE_MOD_AUDIT.md` | Parallel adversarial mod audit |
 | `audit_results/MASTER_AUDIT_REPORT.md` | 123 conflicts across 80 mods (25 CRIT, 38 HIGH) |
+| `deploy.ps1` | One-command deploy: copies all scripts + UI XML to GAMMA overwrite |
+| `TEST_CHECKLIST.md` | Post-deploy smoke test checklist |
+| `CLAUDE_CODE_SETUP_INFRA.md` | Infrastructure setup prompt for new Claude Code sessions |
 
 ### Machine Layout
 
@@ -110,7 +113,8 @@ mp_core.mp_update()  [every frame, actor_on_update callback]
   ├── [client] mp_client_state.client_tick()
   │     ├── STATE_CLEANING → tick_cleanup() (50 releases/frame)
   │     └── STATE_SYNCING → tick_sync() (20 spawns/frame)
-  └── [host] mp_host_events.send_snapshots() (20Hz, max 100 entities)
+  ├── [host] mp_host_events.tick_full_state() (every frame, streams 50 spawns/frame to new clients)
+  └── [host] mp_host_events.send_snapshots() (20Hz, 100 entities via round-robin cursor)
         ├── mp_protocol.broadcast_snapshot(ENTITY_POS, entities)
         ├── mp_protocol.broadcast_snapshot(PLAYER_POS, actor)
         └── [every 5s] send_environment_sync() → broadcast WEATHER_SYNC + TIME_SYNC
@@ -157,6 +161,7 @@ IDLE → [on_full_state()] → CLEANING → [all deleted] → SYNCING → [queue
 | PE | PLAYER_EQUIP | reliable | both | Player equipment (Phase 2) |
 | PS | PLAYER_STATS | unreliable | client→host | Health, armor (Phase 2) |
 | IC | INVENTORY_CHANGE | reliable | host→client | Item pickup/drop (Phase 2) |
+| LC | LEVEL_CHANGE | reliable | host→client | Host changed level — client resets to IDLE |
 
 ## Callback Registrations
 
@@ -169,9 +174,11 @@ IDLE → [on_full_state()] → CLEANING → [all deleted] → SYNCING → [queue
 | `mp_host()` | `server_entity_on_unregister` | `mp_host_events.on_entity_unregister` | mp_host_events |
 | `mp_host()` | `npc_on_death_callback` | `mp_host_events.on_npc_death` | mp_host_events |
 | `mp_host()` | `monster_on_death_callback` | `mp_host_events.on_monster_death` | mp_host_events |
+| `mp_host()` | `on_game_load` | `mp_host_events.on_host_level_load` | mp_host_events |
 | `mp_activate_client_mode()` | `server_entity_on_register` | `mp_core.on_client_entity_registered` | mp_core |
 | `block_client_saves()` | `on_before_save_input` | `mp_core.block_save_attempt` | mp_core |
 | `block_client_saves()` | `on_key_press` | `mp_core.on_client_key_press` (F5 msg) | mp_core |
+| `on_game_start` | — | `mp_alife_guard.install()` | mp_alife_guard |
 
 ## Global Helpers (registered in on_game_start)
 
@@ -198,7 +205,4 @@ Used by `_g.script` wrappers and mod patches to guard MP-sensitive code paths.
 
 ## Phases
 
-- **Phase 0** (current): Entity sync. Host A-Life → client mirrors.
-- **Phase 1**: Render remote players. Position interpolation. Equipment sync.
-- **Phase 2**: Player interaction. Damage, items, crafting as host RPCs.
-- **Phase 3**: Dedicated headless server.
+- **Phase 0** (curr
