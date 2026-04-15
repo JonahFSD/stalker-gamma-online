@@ -1,0 +1,375 @@
+--- mp_host_events.script: Host-side event capture and snapshot broadcasting
+--- Hooks AlifePlus xbus events and Demonized callbacks to capture A-Life state.
+--- Sends events and periodic snapshots to connected clients.
+---
+--- IMPORTANT: All entity IDs sent to clients are the HOST's native IDs.
+--- Clients maintain their own mapping table (host_id -> local_id).
+
+local MSG = nil  -- Lazy init from mp_protocol
+
+local _callbacks_registered = false
+
+-- Connected client tracking (conn_id -> player data)
+local _clients = {}
+
+-- Tracked entity registry — populated by server_entity_on_register callback.
+-- This replaces the 0-65534 linear scan. O(n) on actual entities, not 65K.
+local _tracked_entities = {}  -- id -> true
+local _tracked_count = 0
+
+-- Environment sync timer
+local _last_env_sync = nil
+
+-- ============================================================================
+-- Lazy init
+-- ============================================================================
+
+local function ensure_msg()
+    if not MSG then
+        MSG = mp_protocol.get_msg_types()
+    end
+end
+
+-- ============================================================================
+-- Entity Tracking (replaces linear scan)
+-- ============================================================================
+
+local function track_entity(id)
+    if not _tracked_entities[id] then
+        _tracked_entities[id] = true
+        _tracked_count = _tracked_count + 1
+    end
+end
+
+local function untrack_entity(id)
+    if _tracked_entities[id] then
+        _tracked_entities[id] = nil
+        _tracked_count = _tracked_count - 1
+    end
+end
+
+-- ============================================================================
+-- Callback Registration
+-- ============================================================================
+
+function register_callbacks()
+    if _callbacks_registered then return end
+
+    -- Demonized engine callbacks (entity lifecycle)
+    RegisterScriptCallback("server_entity_on_register", on_entity_register)
+    RegisterScriptCallback("server_entity_on_unregister", on_entity_unregister)
+
+    -- Standard Anomaly callbacks
+    RegisterScriptCallback("npc_on_death_callback", on_npc_death)
+    RegisterScriptCallback("monster_on_death_callback", on_monster_death)
+
+    -- AlifePlus xbus integration (if available)
+    if xbus then
+        xbus.subscribe("cause:kill", on_alife_kill, "gamma_mp_host")
+        xbus.subscribe("cause:massacre", on_alife_massacre, "gamma_mp_host")
+        xbus.subscribe("cause:area", on_alife_area, "gamma_mp_host")
+        printf("[GAMMA MP] AlifePlus xbus hooks registered")
+    end
+
+    -- Build initial entity tracking from existing world state
+    build_entity_registry()
+
+    _callbacks_registered = true
+    printf("[GAMMA MP] Host callbacks registered")
+end
+
+function unregister_callbacks()
+    if not _callbacks_registered then return end
+
+    UnregisterScriptCallback("server_entity_on_register", on_entity_register)
+    UnregisterScriptCallback("server_entity_on_unregister", on_entity_unregister)
+    UnregisterScriptCallback("npc_on_death_callback", on_npc_death)
+    UnregisterScriptCallback("monster_on_death_callback", on_monster_death)
+
+    if xbus then
+        xbus.unsubscribe("cause:kill", "gamma_mp_host")
+        xbus.unsubscribe("cause:massacre", "gamma_mp_host")
+        xbus.unsubscribe("cause:area", "gamma_mp_host")
+    end
+
+    _tracked_entities = {}
+    _tracked_count = 0
+    _callbacks_registered = false
+    printf("[GAMMA MP] Host callbacks unregistered")
+end
+
+--- One-time scan to populate entity registry on host start.
+--- After this, register/unregister callbacks keep it current.
+function build_entity_registry()
+    local sim = alife()
+    if not sim then return end
+
+    _tracked_entities = {}
+    _tracked_count = 0
+
+    -- This is the one and only linear scan. After this, incremental updates only.
+    for id = 0, 65534 do
+        if sim:object(id) then
+            _tracked_entities[id] = true
+            _tracked_count = _tracked_count + 1
+        end
+    end
+
+    printf("[GAMMA MP] Entity registry built: %d entities tracked", _tracked_count)
+end
+
+-- ============================================================================
+-- Entity Lifecycle Events -> Network
+-- ============================================================================
+
+function on_entity_register(se_obj)
+    ensure_msg()
+    if not se_obj then return end
+
+    -- Track locally
+    track_entity(se_obj.id)
+
+    -- Don't broadcast if no clients connected
+    if gns.get_client_count() == 0 then return end
+
+    local data = {
+        id = se_obj.id,  -- host's native ID
+        section = se_obj:section_name(),
+        clsid = se_obj:clsid(),
+        pos_x = se_obj.position.x,
+        pos_y = se_obj.position.y,
+        pos_z = se_obj.position.z,
+        lvid = se_obj.m_level_vertex_id,
+        gvid = se_obj.m_game_vertex_id,
+    }
+
+    -- Include parent for inventory items
+    if se_obj.parent_id and se_obj.parent_id ~= 65535 then
+        data.parent_id = se_obj.parent_id  -- also host's native ID
+    end
+
+    mp_protocol.broadcast_event(MSG.ENTITY_SPAWN, data)
+end
+
+function on_entity_unregister(se_obj)
+    ensure_msg()
+    if not se_obj then return end
+
+    -- Untrack locally
+    untrack_entity(se_obj.id)
+
+    if gns.get_client_count() == 0 then return end
+
+    mp_protocol.broadcast_event(MSG.ENTITY_DESPAWN, {
+        id = se_obj.id,
+    })
+end
+
+-- ============================================================================
+-- Death Events -> Network (with full context for callback chain)
+-- ============================================================================
+
+function on_npc_death(npc, killer)
+    ensure_msg()
+    if not npc then return end
+    if gns.get_client_count() == 0 then return end
+
+    local data = {
+        id = npc:id(),
+        killer_id = killer and killer:id() or -1,
+    }
+
+    local pos = npc:position()
+    if pos then
+        data.pos_x = pos.x
+        data.pos_y = pos.y
+        data.pos_z = pos.z
+    end
+
+    mp_protocol.broadcast_event(MSG.ENTITY_DEATH, data)
+end
+
+function on_monster_death(monster, killer)
+    on_npc_death(monster, killer)
+end
+
+-- ============================================================================
+-- AlifePlus Event Forwarding
+-- ============================================================================
+
+function on_alife_kill(event_data)
+    -- Kill is already sent via on_npc_death. This captures A-Life consequences.
+end
+
+function on_alife_massacre(event_data)
+    -- Massacre threshold reached — squad reassignment follows via A-Life.
+end
+
+function on_alife_area(event_data)
+    -- Area conquest event — faction control changes.
+end
+
+-- ============================================================================
+-- Snapshot Broadcasting (called periodically from mp_core.mp_update)
+-- ============================================================================
+
+function send_snapshots()
+    ensure_msg()
+    if gns.get_client_count() == 0 then return end
+
+    local actor = db.actor
+    if not actor then return end
+
+    local sim = alife()
+    if not sim then return end
+
+    -- Collect online entity positions using tracked registry (NOT linear scan)
+    local entities = {}
+    local count = 0
+
+    for id, _ in pairs(_tracked_entities) do
+        local se_obj = sim:object(id)
+        if se_obj and se_obj:alive() then
+            local obj = level.object_by_id(id)
+            if obj then
+                local pos = obj:position()
+                if pos then
+                    count = count + 1
+                    entities[count] = {
+                        id = id,  -- host's native ID
+                        x = pos.x,
+                        y = pos.y,
+                        z = pos.z,
+                        h = obj:health() or 1.0,
+                    }
+                end
+            end
+        end
+
+        -- Cap per frame to avoid stalls
+        if count >= 100 then break end
+    end
+
+    if count > 0 then
+        mp_protocol.broadcast_snapshot(MSG.ENTITY_POS, entities)
+    end
+
+    -- Send host player position to all clients
+    if actor then
+        local pos = actor:position()
+        mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
+            {
+                id = actor:id(),
+                x = pos.x,
+                y = pos.y,
+                z = pos.z,
+                h = actor:health(),
+            }
+        })
+    end
+
+    -- Periodic weather/time sync (every ~5 seconds)
+    local now = time_global()
+    if not _last_env_sync or now - _last_env_sync > 5000 then
+        _last_env_sync = now
+        send_environment_sync()
+    end
+end
+
+function send_environment_sync()
+    ensure_msg()
+
+    local weather = level.get_weather()
+    if weather then
+        mp_protocol.broadcast_event(MSG.WEATHER_SYNC, {
+            preset = weather,
+        })
+    end
+
+    mp_protocol.broadcast_event(MSG.TIME_SYNC, {
+        hours = level.get_time_hours(),
+        mins = level.get_time_minutes(),
+        factor = level.get_time_factor(),
+    })
+end
+
+-- ============================================================================
+-- Full State Dump (for new client connections)
+-- ============================================================================
+
+function send_full_state(conn_id)
+    ensure_msg()
+    printf("[GAMMA MP] Sending full state to client %d", conn_id)
+
+    local sim = alife()
+    if not sim then return end
+
+    -- Tell client to prepare for full state
+    mp_protocol.send_event(conn_id, MSG.FULL_STATE, {
+        entity_count = _tracked_count,
+    })
+
+    -- Send all tracked entities using the registry (NOT linear scan)
+    local count = 0
+    for id, _ in pairs(_tracked_entities) do
+        local se_obj = sim:object(id)
+        if se_obj then
+            local data = {
+                id = se_obj.id,  -- host's native ID
+                section = se_obj:section_name(),
+                clsid = se_obj:clsid(),
+                pos_x = se_obj.position.x,
+                pos_y = se_obj.position.y,
+                pos_z = se_obj.position.z,
+                lvid = se_obj.m_level_vertex_id,
+                gvid = se_obj.m_game_vertex_id,
+            }
+            if se_obj.parent_id and se_obj.parent_id ~= 65535 then
+                data.parent_id = se_obj.parent_id
+            end
+
+            mp_protocol.send_event(conn_id, MSG.ENTITY_SPAWN, data)
+            count = count + 1
+        else
+            -- Stale entry, clean up
+            untrack_entity(id)
+        end
+    end
+
+    -- Send environment state
+    mp_protocol.send_event(conn_id, MSG.WEATHER_SYNC, {
+        preset = level.get_weather() or "default",
+    })
+
+    mp_protocol.send_event(conn_id, MSG.TIME_SYNC, {
+        hours = level.get_time_hours(),
+        mins = level.get_time_minutes(),
+        factor = level.get_time_factor(),
+    })
+
+    printf("[GAMMA MP] Full state sent: %d entities", count)
+end
+
+-- ============================================================================
+-- Client Player State (received from clients)
+-- ============================================================================
+
+function on_client_player_pos(conn_id, data)
+    _clients[conn_id] = _clients[conn_id] or {}
+    _clients[conn_id].position = data
+    -- TODO: Phase 2 - broadcast to other clients, render remote player actor
+end
+
+function on_client_player_equip(conn_id, data)
+    _clients[conn_id] = _clients[conn_id] or {}
+    _clients[conn_id].equipment = data
+end
+
+function on_client_player_stats(conn_id, data)
+    _clients[conn_id] = _clients[conn_id] or {}
+    _clients[conn_id].stats = data
+end
+
+function get_tracked_count()
+    return _tracked_count
+end

@@ -1,0 +1,3 @@
+C:/Users/jonah/Documents/GitHub/stalker-gamma-online/gamma-mp/gns-bridge/build/CMakeFiles/gns_bridge.dir
+C:/Users/jonah/Documents/GitHub/stalker-gamma-online/gamma-mp/gns-bridge/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/jonah/Documents/GitHub/stalker-gamma-online/gamma-mp/gns-bridge/build/CMakeFiles/ZERO_CHECK.dir

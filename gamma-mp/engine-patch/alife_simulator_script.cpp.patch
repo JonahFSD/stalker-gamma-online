@@ -1,0 +1,47 @@
+================================================================================
+PATCH: src/xrGame/alife_simulator_script.cpp
+================================================================================
+
+Expose set_mp_client_mode and mp_client_mode to Lua.
+
+--- STEP 1: Add wrapper functions ---
+--- FIND (around line 454, near the force_update function): ---
+
+void force_update(CALifeSimulator* self)
+{
+	self->update_scheduled(true);
+}
+
+--- ADD AFTER: ---
+
+// GAMMA MP: A-Life suppression for multiplayer clients
+void set_mp_client_mode(CALifeSimulator* self, bool value)
+{
+	self->set_mp_client_mode(value);
+}
+
+bool get_mp_client_mode(CALifeSimulator* self)
+{
+	return self->mp_client_mode();
+}
+
+
+--- STEP 2: Register the Lua bindings ---
+--- FIND (around line 637): ---
+
+		.def("force_update", &force_update)
+		.def("get_children", &get_children, return_stl_iterator)
+
+--- REPLACE WITH: ---
+
+		.def("force_update", &force_update)
+		.def("set_mp_client_mode", &set_mp_client_mode)
+		.def("mp_client_mode", &get_mp_client_mode)
+		.def("get_children", &get_children, return_stl_iterator)
+
+================================================================================
+
+USAGE FROM LUA:
+  alife():set_mp_client_mode(true)   -- suppress A-Life on this client
+  alife():set_mp_client_mode(false)  -- re-enable A-Life
+  local is_client = alife():mp_client_mode()

@@ -1,0 +1,75 @@
+================================================================================
+PATCH: src/xrGame/level_script.cpp
+================================================================================
+
+Add set_game_time() for absolute time synchronization.
+change_game_time() only adds time (delta). For multiplayer sync we need to SET
+time to an exact value to match the host.
+
+--- STEP 1: Add the function ---
+--- FIND (around line 285-296, the change_game_time function): ---
+
+void change_game_time(u32 days, u32 hours, u32 mins)
+{
+	game_sv_Single* tpGame = smart_cast<game_sv_Single *>(Level().Server->game);
+	if (tpGame && ai().get_alife())
+	{
+		u32 value = days * 86400 + hours * 3600 + mins * 60;
+		float fValue = static_cast<float>(value);
+		value *= 1000; //msec
+		g_pGamePersistent->Environment().ChangeGameTime(fValue);
+		tpGame->alife().time_manager().change_game_time(value);
+	}
+}
+
+--- ADD AFTER: ---
+
+// GAMMA MP: Set absolute game time for multiplayer synchronization
+void set_game_time(u32 hours, u32 mins, u32 secs)
+{
+	game_sv_Single* tpGame = smart_cast<game_sv_Single*>(Level().Server->game);
+	if (!tpGame || !ai().get_alife())
+		return;
+
+	// Get current game time
+	u32 year = 0, month = 0, day = 0, c_hours = 0, c_mins = 0, c_secs = 0, c_milisecs = 0;
+	split_time(Level().GetGameTime(), year, month, day, c_hours, c_mins, c_secs, c_milisecs);
+
+	// Calculate delta in seconds from current time-of-day to target time-of-day
+	s32 current_tod = c_hours * 3600 + c_mins * 60 + c_secs;
+	s32 target_tod = hours * 3600 + mins * 60 + secs;
+	s32 delta = target_tod - current_tod;
+
+	// Only apply if there's a meaningful difference (>1 second)
+	if (abs(delta) <= 1)
+		return;
+
+	// If delta is negative (target is earlier than current), we can't go backwards
+	// with the engine's time system. Instead, advance by (86400 + delta) to wrap around.
+	// But for MP sync, we typically only need small forward corrections.
+	if (delta < 0)
+		delta += 86400; // wrap to next day's equivalent time
+
+	float fDelta = static_cast<float>(delta);
+	u32 msDelta = delta * 1000;
+	g_pGamePersistent->Environment().ChangeGameTime(fDelta);
+	tpGame->alife().time_manager().change_game_time(msDelta);
+}
+
+
+--- STEP 2: Register the Lua binding ---
+--- FIND (around line 2439): ---
+
+			def("change_game_time", change_game_time),
+
+--- REPLACE WITH: ---
+
+			def("change_game_time", change_game_time),
+			def("set_game_time", set_game_time),
+
+================================================================================
+
+USAGE FROM LUA:
+  level.set_game_time(14, 30, 0)  -- set time to 2:30 PM
+  level.set_weather("clear1", true)  -- already exists!
+  level.change_game_time(0, 0, 5)   -- already exists, add 5 minutes

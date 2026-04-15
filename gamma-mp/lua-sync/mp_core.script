@@ -1,0 +1,294 @@
+--- mp_core.script: GAMMA Multiplayer core module
+--- Manages multiplayer state, initialization, and the main update loop.
+---
+--- This is an Anomaly .script file. Place in gamedata/scripts/
+--- Register callbacks in on_game_start()
+
+local MP_VERSION = "0.1.0-alpha"
+local MP_PORT_DEFAULT = 44140
+
+-- State
+local _is_initialized = false
+local _is_host = false
+local _is_client = false
+local _host_ip = nil
+local _host_port = MP_PORT_DEFAULT
+
+-- Tick tracking
+local _last_snapshot_time = 0
+local _snapshot_interval_ms = 50  -- 20 Hz default
+
+-- Save blocking state
+local _original_save_funcs = {}
+
+-- ============================================================================
+-- Initialization
+-- ============================================================================
+
+function mp_init()
+    if _is_initialized then return true end
+
+    local result = gns.init()
+    if result ~= 0 then
+        printf("[GAMMA MP] ERROR: Failed to initialize networking")
+        return false
+    end
+
+    _is_initialized = true
+    printf("[GAMMA MP] v%s initialized", MP_VERSION)
+    return true
+end
+
+function mp_shutdown()
+    if not _is_initialized then return end
+
+    if _is_host then mp_stop_host() end
+    if _is_client then mp_disconnect() end
+
+    gns.shutdown()
+    _is_initialized = false
+    printf("[GAMMA MP] Shutdown complete")
+end
+
+-- ============================================================================
+-- Host API
+-- ============================================================================
+
+function mp_host(port)
+    if not _is_initialized then
+        if not mp_init() then return false end
+    end
+
+    port = port or MP_PORT_DEFAULT
+
+    local result = gns.host(port)
+    if result ~= 0 then
+        printf("[GAMMA MP] ERROR: Failed to start hosting on port %d", port)
+        return false
+    end
+
+    _is_host = true
+    _host_port = port
+    printf("[GAMMA MP] Hosting on port %d", port)
+
+    -- Register host-side event capture
+    mp_host_events.register_callbacks()
+
+    return true
+end
+
+function mp_stop_host()
+    if not _is_host then return end
+
+    mp_host_events.unregister_callbacks()
+    gns.stop_host()
+
+    _is_host = false
+    printf("[GAMMA MP] Stopped hosting")
+end
+
+-- ============================================================================
+-- Client API
+-- ============================================================================
+
+function mp_connect(ip, port)
+    if not _is_initialized then
+        if not mp_init() then return false end
+    end
+
+    port = port or MP_PORT_DEFAULT
+
+    local result = gns.connect(ip, port)
+    if result ~= 0 then
+        printf("[GAMMA MP] ERROR: Failed to connect to %s:%d", ip, port)
+        return false
+    end
+
+    _is_client = true
+    _host_ip = ip
+    _host_port = port
+
+    -- Suppress A-Life on client
+    if alife() then
+        alife():set_mp_client_mode(true)
+        printf("[GAMMA MP] A-Life suppressed (client mode)")
+    end
+
+    -- Register spawn interception callback for ID mapping
+    RegisterScriptCallback("server_entity_on_register", on_client_entity_registered)
+
+    -- Block saves to prevent corruption
+    block_client_saves()
+
+    printf("[GAMMA MP] Connecting to %s:%d...", ip, port)
+    return true
+end
+
+function mp_disconnect()
+    if not _is_client then return end
+
+    -- Re-enable A-Life
+    if alife() then
+        alife():set_mp_client_mode(false)
+        printf("[GAMMA MP] A-Life re-enabled")
+    end
+
+    -- Unregister spawn interception
+    UnregisterScriptCallback("server_entity_on_register", on_client_entity_registered)
+
+    -- Restore saves
+    restore_client_saves()
+
+    gns.disconnect()
+    _is_client = false
+    _host_ip = nil
+    printf("[GAMMA MP] Disconnected")
+end
+
+-- ============================================================================
+-- Client Spawn Interception (for ID mapping)
+-- ============================================================================
+
+--- When the client calls alife():create(), the engine fires
+--- server_entity_on_register with the newly created se_obj.
+--- We forward this to mp_client_state to complete the ID mapping.
+function on_client_entity_registered(se_obj)
+    if _is_client and se_obj then
+        mp_client_state.on_local_entity_registered(se_obj)
+    end
+end
+
+-- ============================================================================
+-- Client Save Blocking
+-- ============================================================================
+
+--- Block quicksave/autosave/manual save while connected as client.
+--- The client's world state is synthetic (created from network data).
+--- Saving it would create a corrupt save file.
+function block_client_saves()
+    -- Override the console command handlers for save operations.
+    -- Anomaly uses exec_console_cmd("save") internally.
+    -- We hook into the save-related script callbacks.
+    RegisterScriptCallback("on_before_save_input", block_save_attempt)
+
+    -- Also hook the key binding for quicksave
+    RegisterScriptCallback("on_key_press", on_client_key_press)
+
+    printf("[GAMMA MP] Client saves BLOCKED (prevents corruption)")
+end
+
+function restore_client_saves()
+    UnregisterScriptCallback("on_before_save_input", block_save_attempt)
+    UnregisterScriptCallback("on_key_press", on_client_key_press)
+    printf("[GAMMA MP] Client saves RESTORED")
+end
+
+function block_save_attempt(flags)
+    -- Anomaly's on_before_save_input passes a flags table with {ret_value = true}
+    -- Setting ret_value to false prevents the save
+    if _is_client and flags then
+        flags.ret_value = false
+        printf("[GAMMA MP] Save blocked — client mode active")
+    end
+end
+
+function on_client_key_press(key)
+    -- DIK_F5 = quicksave key in STALKER. Key code 63.
+    if _is_client and key == DIK_keys.DIK_F5 then
+        -- Can't truly block the keypress, but the on_before_save_input hook
+        -- will catch the actual save attempt. This is just for the user message.
+        news_manager.send_tip(db.actor,
+            "Save disabled while connected to multiplayer host",
+            nil, nil, 3000)
+    end
+end
+
+-- ============================================================================
+-- Getters
+-- ============================================================================
+
+function is_mp_active()   return _is_host or _is_client end
+function is_host()        return _is_host end
+function is_client()      return _is_client end
+function get_host_ip()    return _host_ip end
+function get_host_port()  return _host_port end
+
+-- ============================================================================
+-- Main Update Loop (called from actor_on_update)
+-- ============================================================================
+
+function mp_update()
+    if not is_mp_active() then return end
+
+    -- Process connection events
+    local events = gns.poll_events()
+    for _, evt in ipairs(events) do
+        mp_on_connection_event(evt)
+    end
+
+    -- Process incoming messages
+    local messages = gns.poll()
+    for _, msg in ipairs(messages) do
+        mp_protocol.on_message(msg.conn_id, msg.data, msg.size)
+    end
+
+    -- Host: send periodic snapshots
+    if _is_host then
+        local now = time_global()
+        if now - _last_snapshot_time >= _snapshot_interval_ms then
+            mp_host_events.send_snapshots()
+            _last_snapshot_time = now
+        end
+    end
+end
+
+-- ============================================================================
+-- Connection Events
+-- ============================================================================
+
+function mp_on_connection_event(evt)
+    if evt.event_type == 1 then -- Connected
+        printf("[GAMMA MP] Connection: %s", evt.info)
+        if _is_host then
+            mp_host_events.send_full_state(evt.conn_id)
+        end
+    elseif evt.event_type == 2 then -- Disconnected
+        printf("[GAMMA MP] Disconnection: %s", evt.info)
+        if _is_client then
+            mp_disconnect()
+        end
+    elseif evt.event_type == 3 then -- Rejected
+        printf("[GAMMA MP] Connection rejected: %s", evt.info)
+        _is_client = false
+    end
+end
+
+-- ============================================================================
+-- Debug / Status
+-- ============================================================================
+
+function mp_status()
+    printf("[GAMMA MP] === Status ===")
+    printf("  Version: %s", MP_VERSION)
+    printf("  Host: %s", tostring(_is_host))
+    printf("  Client: %s", tostring(_is_client))
+    if _is_host then
+        printf("  Port: %d", _host_port)
+        printf("  Clients: %d", gns.get_client_count())
+        printf("  Tracked entities: %d", mp_host_events.get_tracked_count())
+    end
+    if _is_client then
+        printf("  Connected to: %s:%d", _host_ip or "?", _host_port)
+        printf("  Network entities: %d", mp_client_state.get_entity_count())
+        printf("  ID mappings: %d", mp_client_state.get_id_map_count())
+    end
+end
+
+-- ============================================================================
+-- Anomaly Callback Registration
+-- ============================================================================
+
+function on_game_start()
+    RegisterScriptCallback("actor_on_update", mp_update)
+    printf("[GAMMA MP] Core module loaded")
+end

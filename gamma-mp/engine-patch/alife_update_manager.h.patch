@@ -1,0 +1,41 @@
+================================================================================
+PATCH: src/xrGame/alife_update_manager.h
+================================================================================
+
+This patch adds the mp_client_mode flag and a Lua-callable setter.
+
+--- FIND THIS BLOCK (around line 27-33): ---
+
+private:
+	bool m_first_time;
+
+protected:
+	u64 m_max_process_time;
+	float m_update_monster_factor;
+	u32 m_objects_per_update;
+	bool m_changing_level;
+
+--- REPLACE WITH: ---
+
+private:
+	bool m_first_time;
+
+protected:
+	u64 m_max_process_time;
+	float m_update_monster_factor;
+	u32 m_objects_per_update;
+	bool m_changing_level;
+	bool m_mp_client_mode;  // GAMMA MP: when true, A-Life update loop is suppressed
+
+--- THEN FIND THIS BLOCK (around line 44-49, in the public section): ---
+
+	CALifeUpdateManager(xrServer* server, LPCSTR section);
+	virtual ~CALifeUpdateManager();
+
+--- ADD AFTER the destructor declaration: ---
+
+	// GAMMA MP: A-Life suppression for multiplayer clients
+	void set_mp_client_mode(bool value);
+	bool mp_client_mode() const { return m_mp_client_mode; }
+
+================================================================================

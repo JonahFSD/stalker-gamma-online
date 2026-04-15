@@ -1,0 +1,224 @@
+--- mp_protocol.script: GAMMA Multiplayer serialization and message protocol
+--- Defines message types, serialization, and dispatch.
+---
+--- Uses a simple JSON-ish text protocol for Phase 1 (easy debugging).
+--- Can swap to MessagePack or binary in Phase 2 for performance.
+---
+--- NOTE: All entity IDs in messages are the HOST's native IDs.
+--- Clients maintain their own ID mapping table (see mp_client_state.script).
+
+-- ============================================================================
+-- Message Types
+-- ============================================================================
+
+local MSG = {
+    -- Events (reliable channel)
+    ENTITY_SPAWN      = "ES",
+    ENTITY_DEATH      = "ED",
+    ENTITY_DESPAWN     = "ER",  -- release
+    SQUAD_ASSIGN      = "SA",
+    INVENTORY_CHANGE  = "IC",
+    WEATHER_SYNC      = "WS",
+    TIME_SYNC         = "TS",
+    FULL_STATE        = "FS",  -- initial state dump for new client
+    PLAYER_EQUIP      = "PE",
+
+    -- Snapshots (unreliable channel)
+    ENTITY_POS        = "EP",  -- batch position update
+    PLAYER_POS        = "PP",  -- player position
+    PLAYER_STATS      = "PS",  -- health, armor, etc.
+}
+
+-- ============================================================================
+-- Serialization (Phase 1: simple text protocol)
+-- ============================================================================
+
+-- Pack a table into a transmittable string
+-- Format: "MSG_TYPE|key1=val1|key2=val2|..."
+-- For arrays: "MSG_TYPE|id1,x1,y1,z1;id2,x2,y2,z2;..."
+--
+-- Phase 2: replace with MessagePack for 5-10x size reduction
+
+local function serialize_event(msg_type, data)
+    local parts = { msg_type }
+    for k, v in pairs(data) do
+        if type(v) == "table" then
+            -- Sub-table: serialize as comma-separated
+            parts[#parts + 1] = k .. "=" .. table.concat(v, ",")
+        else
+            parts[#parts + 1] = k .. "=" .. tostring(v)
+        end
+    end
+    return table.concat(parts, "|")
+end
+
+local function serialize_positions(msg_type, entities)
+    -- Compact format for position batches: "EP|id,x,y,z,h;id,x,y,z,h;..."
+    local entries = {}
+    for _, e in ipairs(entities) do
+        entries[#entries + 1] = string.format("%d,%.2f,%.2f,%.2f,%.1f",
+            e.id, e.x, e.y, e.z, e.h or 1.0)
+    end
+    return msg_type .. "|" .. table.concat(entries, ";")
+end
+
+-- Deserialize a message string back into type + data
+local function deserialize(str)
+    local parts = {}
+    for part in str:gmatch("[^|]+") do
+        parts[#parts + 1] = part
+    end
+
+    if #parts == 0 then return nil, nil end
+
+    local msg_type = parts[1]
+    local data = {}
+
+    -- Check if it's a position batch (entries separated by semicolons)
+    if msg_type == MSG.ENTITY_POS or msg_type == MSG.PLAYER_POS then
+        if #parts >= 2 then
+            local entries = {}
+            for entry in parts[2]:gmatch("[^;]+") do
+                local values = {}
+                for v in entry:gmatch("[^,]+") do
+                    values[#values + 1] = tonumber(v)
+                end
+                if #values >= 4 then
+                    entries[#entries + 1] = {
+                        id = values[1],
+                        x = values[2],
+                        y = values[3],
+                        z = values[4],
+                        h = values[5] or 1.0,
+                    }
+                end
+            end
+            data.entities = entries
+        end
+    else
+        -- Key-value pairs
+        for i = 2, #parts do
+            local eq = parts[i]:find("=")
+            if eq then
+                local key = parts[i]:sub(1, eq - 1)
+                local val = parts[i]:sub(eq + 1)
+                -- Try to parse as number
+                local num = tonumber(val)
+                data[key] = num or val
+            end
+        end
+    end
+
+    return msg_type, data
+end
+
+-- ============================================================================
+-- Message Dispatch
+-- ============================================================================
+
+function on_message(conn_id, raw_data, size)
+    if not raw_data or size == 0 then return end
+
+    local msg_type, data = deserialize(raw_data)
+    if not msg_type then
+        printf("[GAMMA MP] WARNING: Failed to deserialize message from %d", conn_id)
+        return
+    end
+
+    if mp_core.is_client() then
+        -- Client receives state from host
+        dispatch_client(msg_type, data, conn_id)
+    elseif mp_core.is_host() then
+        -- Host receives player updates from clients
+        dispatch_host(msg_type, data, conn_id)
+    end
+end
+
+-- ============================================================================
+-- Client-side dispatch: Apply host state to local world
+-- ============================================================================
+
+function dispatch_client(msg_type, data, conn_id)
+    if msg_type == MSG.ENTITY_SPAWN then
+        mp_client_state.on_entity_spawn(data)
+
+    elseif msg_type == MSG.ENTITY_DEATH then
+        mp_client_state.on_entity_death(data)
+
+    elseif msg_type == MSG.ENTITY_DESPAWN then
+        mp_client_state.on_entity_despawn(data)
+
+    elseif msg_type == MSG.ENTITY_POS then
+        mp_client_state.on_entity_positions(data.entities)
+
+    elseif msg_type == MSG.SQUAD_ASSIGN then
+        mp_client_state.on_squad_assign(data)
+
+    elseif msg_type == MSG.WEATHER_SYNC then
+        mp_client_state.on_weather_sync(data)
+
+    elseif msg_type == MSG.TIME_SYNC then
+        mp_client_state.on_time_sync(data)
+
+    elseif msg_type == MSG.FULL_STATE then
+        mp_client_state.on_full_state(data)
+
+    elseif msg_type == MSG.PLAYER_POS then
+        mp_client_state.on_remote_player_pos(data, conn_id)
+
+    elseif msg_type == MSG.PLAYER_EQUIP then
+        mp_client_state.on_remote_player_equip(data, conn_id)
+
+    else
+        printf("[GAMMA MP] Unknown message type from host: %s", msg_type)
+    end
+end
+
+-- ============================================================================
+-- Host-side dispatch: Process client inputs
+-- ============================================================================
+
+function dispatch_host(msg_type, data, conn_id)
+    if msg_type == MSG.PLAYER_POS then
+        -- Client sending their position to host
+        mp_host_events.on_client_player_pos(conn_id, data)
+
+    elseif msg_type == MSG.PLAYER_EQUIP then
+        mp_host_events.on_client_player_equip(conn_id, data)
+
+    elseif msg_type == MSG.PLAYER_STATS then
+        mp_host_events.on_client_player_stats(conn_id, data)
+
+    else
+        printf("[GAMMA MP] Unknown message type from client %d: %s", conn_id, msg_type)
+    end
+end
+
+-- ============================================================================
+-- Send helpers (called by other modules)
+-- ============================================================================
+
+function send_event(conn_id, msg_type, data)
+    local payload = serialize_event(msg_type, data)
+    gns.send_reliable(conn_id, payload)
+end
+
+function broadcast_event(msg_type, data)
+    local payload = serialize_event(msg_type, data)
+    gns.send_reliable(-1, payload)  -- -1 = broadcast
+end
+
+function send_snapshot(conn_id, msg_type, entities)
+    local payload = serialize_positions(msg_type, entities)
+    gns.send_unreliable(conn_id, payload)
+end
+
+function broadcast_snapshot(msg_type, entities)
+    local payload = serialize_positions(msg_type, entities)
+    gns.send_unreliable(-1, payload)
+end
+
+-- Export message type constants
+function get_msg_types()
+    return MSG
+end

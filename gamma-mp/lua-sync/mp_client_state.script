@@ -1,0 +1,399 @@
+--- mp_client_state.script: Client-side state application
+--- Receives events and snapshots from host, applies them to the local world.
+--- The client's A-Life update loop is suppressed; all entity state comes from here.
+---
+--- CRITICAL: Entity ID Mapping
+--- The host sends its entity IDs. When the client calls alife():create(), the engine
+--- generates a NEW local ID. We maintain a bidirectional mapping:
+---   _host_to_local[host_id] -> local_id
+---   _local_to_host[local_id] -> host_id
+--- ALL lookups of entities received from the network go through resolve_id().
+
+-- ID mapping tables
+local _host_to_local = {}   -- host_id -> local_id
+local _local_to_host = {}   -- local_id -> host_id
+
+-- Track entities we've created from network data
+local _network_entities = {}  -- host_id -> { section, last_pos, ... }
+local _remote_players = {}    -- conn_id -> { id, pos, ... }
+
+-- Pending spawns waiting for server_entity_on_register callback
+local _pending_spawns = {}    -- section_key -> host_id (see on_entity_spawn)
+
+-- ============================================================================
+-- ID Mapping
+-- ============================================================================
+
+--- Translate a host entity ID to the local client ID.
+--- Returns nil if no mapping exists (entity not yet created locally).
+function resolve_id(host_id)
+    if not host_id then return nil end
+    return _host_to_local[host_id] or nil
+end
+
+--- Register a mapping between host and local IDs.
+function map_id(host_id, local_id)
+    _host_to_local[host_id] = local_id
+    _local_to_host[local_id] = host_id
+end
+
+--- Remove a mapping (entity destroyed).
+function unmap_id(host_id)
+    local local_id = _host_to_local[host_id]
+    if local_id then
+        _local_to_host[local_id] = nil
+    end
+    _host_to_local[host_id] = nil
+end
+
+--- Get the host ID for a local entity (reverse lookup).
+function reverse_id(local_id)
+    if not local_id then return nil end
+    return _local_to_host[local_id] or nil
+end
+
+-- ============================================================================
+-- Spawn Interception
+-- ============================================================================
+
+--- Called from a server_entity_on_register callback hook.
+--- When we call alife():create(), the engine fires server_entity_on_register
+--- with the NEW local se_obj. We intercept this to capture the local ID
+--- and complete the ID mapping.
+function on_local_entity_registered(se_obj)
+    if not se_obj then return end
+
+    local section = se_obj:section_name()
+    local pos = se_obj.position
+
+    -- Build the same key we stored in _pending_spawns
+    local key = string.format("%s_%.0f_%.0f_%.0f",
+        section, pos.x, pos.y, pos.z)
+
+    local host_id = _pending_spawns[key]
+    if host_id then
+        map_id(host_id, se_obj.id)
+        _pending_spawns[key] = nil
+        printf("[GAMMA MP] ID mapped: host %d -> local %d (%s)", host_id, se_obj.id, section)
+    end
+end
+
+-- ============================================================================
+-- Entity Spawn (from host)
+-- ============================================================================
+
+function on_entity_spawn(data)
+    if not data.id or not data.section then return end
+
+    local host_id = data.id
+    local sim = alife()
+    if not sim then return end
+
+    -- Check if we already have a mapping for this host entity
+    local local_id = resolve_id(host_id)
+    if local_id then
+        local existing = sim:object(local_id)
+        if existing then
+            -- Entity exists locally, just update tracking
+            _network_entities[host_id] = data
+            return
+        else
+            -- Mapping is stale, clean it up
+            unmap_id(host_id)
+        end
+    end
+
+    -- Create the entity
+    local pos = vector():set(
+        data.pos_x or 0,
+        data.pos_y or 0,
+        data.pos_z or 0
+    )
+
+    -- Store a pending spawn key so on_local_entity_registered can map the ID.
+    -- Key = section + rounded position (position is quantized in create())
+    local key = string.format("%s_%.0f_%.0f_%.0f",
+        data.section, pos.x, pos.y, pos.z)
+    _pending_spawns[key] = host_id
+
+    local parent_id = data.parent_id
+    if parent_id then
+        -- parent_id is also a host ID — resolve it
+        local local_parent = resolve_id(parent_id)
+        if local_parent then
+            sim:create(data.section, pos,
+                data.lvid or 0,
+                data.gvid or 0,
+                local_parent)
+        else
+            -- Parent not yet created; spawn in world, will get picked up later
+            printf("[GAMMA MP] WARNING: Parent %d not mapped, spawning in world", parent_id)
+            sim:create(data.section, pos,
+                data.lvid or 0,
+                data.gvid or 0)
+        end
+    else
+        -- World entity
+        sim:create(data.section, pos,
+            data.lvid or 0,
+            data.gvid or 0)
+    end
+
+    _network_entities[host_id] = data
+end
+
+-- ============================================================================
+-- Entity Death (from host)
+-- ============================================================================
+
+function on_entity_death(data)
+    if not data.id then return end
+
+    local host_id = data.id
+    local local_id = resolve_id(host_id)
+    if not local_id then
+        printf("[GAMMA MP] WARNING: Death for unmapped host entity %d", host_id)
+        return
+    end
+
+    local sim = alife()
+    if not sim then return end
+
+    local se_obj = sim:object(local_id)
+    if not se_obj then
+        unmap_id(host_id)
+        _network_entities[host_id] = nil
+        return
+    end
+
+    -- Try to kill with context for proper callback chain
+    if data.killer_id and data.killer_id >= 0 then
+        local killer_local = resolve_id(data.killer_id)
+        if killer_local then
+            local killer_se = sim:object(killer_local)
+            if killer_se then
+                sim:kill_entity(se_obj, killer_se)
+            else
+                sim:kill_entity(se_obj)
+            end
+        else
+            sim:kill_entity(se_obj)
+        end
+    else
+        sim:kill_entity(se_obj)
+    end
+
+    -- Don't unmap yet — the entity might still exist as a corpse.
+    -- Unmap when we get ENTITY_DESPAWN.
+    _network_entities[host_id] = nil
+end
+
+-- ============================================================================
+-- Entity Despawn (from host)
+-- ============================================================================
+
+function on_entity_despawn(data)
+    if not data.id then return end
+
+    local host_id = data.id
+    local local_id = resolve_id(host_id)
+
+    if local_id then
+        local sim = alife()
+        if sim then
+            local se_obj = sim:object(local_id)
+            if se_obj then
+                sim:release(se_obj, true)
+            end
+        end
+        unmap_id(host_id)
+    end
+
+    _network_entities[host_id] = nil
+end
+
+-- ============================================================================
+-- Entity Position Updates (from host, unreliable channel)
+-- ============================================================================
+
+function on_entity_positions(entities)
+    if not entities then return end
+
+    for _, e in ipairs(entities) do
+        apply_entity_position(e.id, e.x, e.y, e.z, e.h)
+    end
+end
+
+function apply_entity_position(host_id, x, y, z, health)
+    if not host_id then return end
+
+    local local_id = resolve_id(host_id)
+    if not local_id then return end  -- unknown entity, skip silently (unreliable channel)
+
+    -- Try game_object first (online entity on same level)
+    local obj = level.object_by_id(local_id)
+    if obj then
+        local target_pos = vector():set(x, y, z)
+        obj:force_set_position(target_pos)
+
+        -- Update health if significantly different
+        if health and obj:alive() then
+            local current_h = obj:health()
+            if math.abs(current_h - health) > 0.05 then
+                -- TODO: Phase 2 - smooth health transitions
+            end
+        end
+        return
+    end
+
+    -- Fallback: offline entity, use teleport_object
+    local sim = alife()
+    if sim then
+        local se_obj = sim:object(local_id)
+        if se_obj then
+            local pos = vector():set(x, y, z)
+            sim:teleport_object(local_id, se_obj.m_game_vertex_id,
+                se_obj.m_level_vertex_id, pos)
+        end
+    end
+end
+
+-- ============================================================================
+-- Squad Assignment (from host)
+-- ============================================================================
+
+function on_squad_assign(data)
+    if not data.squad_id or not data.smart_name then return end
+
+    local local_squad_id = resolve_id(data.squad_id)
+    if not local_squad_id then
+        printf("[GAMMA MP] WARNING: Squad assign for unmapped host entity %d", data.squad_id)
+        return
+    end
+
+    local sim = alife()
+    if not sim then return end
+
+    local squad = sim:object(local_squad_id)
+    if not squad then return end
+
+    if not SIMBOARD then return end
+
+    local smart = SIMBOARD:get_smart_by_name(data.smart_name)
+    if smart then
+        SIMBOARD:assign_squad_to_smart(squad, smart)
+    end
+end
+
+-- ============================================================================
+-- Weather Sync (from host)
+-- ============================================================================
+
+function on_weather_sync(data)
+    if not data.preset then return end
+    level.set_weather(data.preset, true)
+end
+
+-- ============================================================================
+-- Time Sync (from host)
+-- ============================================================================
+
+function on_time_sync(data)
+    if not data.hours or not data.mins then return end
+
+    if data.factor then
+        level.set_time_factor(data.factor)
+    end
+
+    if level.set_game_time then
+        level.set_game_time(data.hours, data.mins, data.secs or 0)
+    else
+        local cur_h = level.get_time_hours()
+        local cur_m = level.get_time_minutes()
+        local delta_h = data.hours - cur_h
+        local delta_m = data.mins - cur_m
+
+        if delta_h ~= 0 or delta_m ~= 0 then
+            if delta_h > 0 or (delta_h == 0 and delta_m > 0) then
+                level.change_game_time(0, delta_h, delta_m)
+            end
+        end
+    end
+end
+
+-- ============================================================================
+-- Full State (initial sync for new client)
+-- ============================================================================
+
+function on_full_state(data)
+    printf("[GAMMA MP] Receiving full world state from host...")
+
+    -- Clear any stale mappings from a previous session
+    _host_to_local = {}
+    _local_to_host = {}
+    _network_entities = {}
+    _pending_spawns = {}
+
+    if data.entity_count then
+        printf("[GAMMA MP] Expecting %d entities", data.entity_count)
+    end
+end
+
+-- ============================================================================
+-- Remote Player Position (from host, forwarded from other clients)
+-- ============================================================================
+
+function on_remote_player_pos(data, conn_id)
+    if not data.entities or #data.entities == 0 then return end
+
+    for _, e in ipairs(data.entities) do
+        _remote_players[conn_id] = _remote_players[conn_id] or {}
+        _remote_players[conn_id].pos = vector():set(e.x, e.y, e.z)
+        _remote_players[conn_id].health = e.h
+        -- TODO: Phase 2 - render remote player as visible actor
+    end
+end
+
+-- ============================================================================
+-- Remote Player Equipment (from host)
+-- ============================================================================
+
+function on_remote_player_equip(data, conn_id)
+    _remote_players[conn_id] = _remote_players[conn_id] or {}
+    _remote_players[conn_id].equipment = data
+    -- TODO: Phase 2 - update remote player visual model
+end
+
+-- ============================================================================
+-- Utility
+-- ============================================================================
+
+function get_network_entities()
+    return _network_entities
+end
+
+function get_remote_players()
+    return _remote_players
+end
+
+function get_entity_count()
+    local count = 0
+    for _ in pairs(_network_entities) do count = count + 1 end
+    return count
+end
+
+function get_id_map_count()
+    local count = 0
+    for _ in pairs(_host_to_local) do count = count + 1 end
+    return count
+end
+
+--- Debug: dump the ID mapping table
+function dump_id_map()
+    printf("[GAMMA MP] === ID Mapping Table (%d entries) ===", get_id_map_count())
+    for host_id, local_id in pairs(_host_to_local) do
+        local info = _network_entities[host_id]
+        local section = info and info.section or "?"
+        printf("  host %d -> local %d (%s)", host_id, local_id, section)
+    end
+end
