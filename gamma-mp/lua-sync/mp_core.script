@@ -317,11 +317,95 @@ function mp_status()
 end
 
 -- ============================================================================
+-- Console Commands (via on_console_execute callback)
+-- ============================================================================
+
+--- Handle console commands starting with "mp"
+--- Usage:
+---   mp init          — initialize networking
+---   mp host [port]   — start hosting (default port 44140)
+---   mp connect ip [port] — connect to host
+---   mp disconnect    — disconnect from host
+---   mp stop          — stop hosting
+---   mp shutdown      — full shutdown
+---   mp status        — show connection status
+---   mp alife on/off  — toggle A-Life suppression (debug)
+---   mp help          — show available commands
+function on_console_execute(cmd, ...)
+    if cmd ~= "mp" then return end
+
+    local args = {...}
+    local subcmd = args[1]
+
+    if not subcmd or subcmd == "help" then
+        printf("[GAMMA MP] Commands:")
+        printf("  mp init              — initialize networking")
+        printf("  mp host [port]       — start hosting")
+        printf("  mp connect ip [port] — connect to host")
+        printf("  mp disconnect        — disconnect")
+        printf("  mp stop              — stop hosting")
+        printf("  mp shutdown          — full shutdown")
+        printf("  mp status            — show status")
+        printf("  mp alife on|off      — toggle A-Life (debug)")
+        return
+    end
+
+    if subcmd == "init" then
+        mp_init()
+
+    elseif subcmd == "host" then
+        local port = tonumber(args[2]) or MP_PORT_DEFAULT
+        mp_host(port)
+
+    elseif subcmd == "connect" then
+        local ip = args[2]
+        if not ip then
+            printf("[GAMMA MP] Usage: mp connect <ip> [port]")
+            return
+        end
+        local port = tonumber(args[3]) or MP_PORT_DEFAULT
+        mp_connect(ip, port)
+
+    elseif subcmd == "disconnect" then
+        mp_disconnect()
+
+    elseif subcmd == "stop" then
+        mp_stop_host()
+
+    elseif subcmd == "shutdown" then
+        mp_shutdown()
+
+    elseif subcmd == "status" then
+        mp_status()
+
+    elseif subcmd == "alife" then
+        local toggle = args[2]
+        if toggle == "off" then
+            if alife() then
+                alife():set_mp_client_mode(true)
+                printf("[GAMMA MP] A-Life suppressed")
+            end
+        elseif toggle == "on" then
+            if alife() then
+                alife():set_mp_client_mode(false)
+                printf("[GAMMA MP] A-Life resumed")
+            end
+        else
+            printf("[GAMMA MP] Usage: mp alife on|off")
+        end
+
+    else
+        printf("[GAMMA MP] Unknown command: mp %s (try: mp help)", subcmd)
+    end
+end
+
+-- ============================================================================
 -- Anomaly Callback Registration
 -- ============================================================================
 
 function on_game_start()
     RegisterScriptCallback("actor_on_update", mp_update)
+    RegisterScriptCallback("on_console_execute", on_console_execute)
 
     -- Expose global helpers so other scripts (and mod patches) can guard
     -- MP-sensitive code paths without importing mp_core directly.
