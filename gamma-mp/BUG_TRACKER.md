@@ -40,11 +40,11 @@ Last updated: 2026-04-15
 **Problem:** Concern that `alife():create()` might fire `server_entity_on_register` callback asynchronously, breaking FIFO ordering.
 **Finding:** Engine fires callback SYNCHRONOUSLY. Call chain: `create()` -> `CALifeSimulatorBase::spawn_item()` -> `register_object()` -> `CSE_ALifeDynamicObject::on_register()` -> direct `luabind::functor` call. No queueing. FIFO guaranteed. Only exception: during save load, `can_register_objects()` is false and callbacks batch — irrelevant to MP runtime.
 
-## Bug #6: Level Mismatch (OPEN)
+## Bug #6: Level Mismatch (FIXED)
 **Severity:** HIGH
 **File:** `lua-sync/mp_client_state.script` lines 296-306
 **Problem:** Host on Level A sends entities with Level A vertex IDs. Client on Level B tries to teleport offline entities using stale `m_level_vertex_id`/`m_game_vertex_id` from Level A. `level.object_by_id()` only returns online entities on current level.
-**Fix:** Check entity's level before applying offline teleport. Skip if entity is on a different level than client.
+**Fix:** In `apply_entity_position()` offline fallback, compare `game_graph():vertex(gvid):level_id()` against the actor's level ID before calling `teleport_object`. Return early if they differ. Falls through to original behavior if `game_graph()` or `db.actor` are unavailable.
 
 ## Bug #7: Death Double-Fire (OPEN)
 **Severity:** MEDIUM (theoretical)

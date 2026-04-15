@@ -321,14 +321,25 @@ function apply_entity_position(host_id, x, y, z, health)
         return
     end
 
-    -- Fallback: offline entity, use teleport_object
+    -- Fallback: offline entity, use teleport_object.
+    -- Only teleport if entity is on the client's current level — calling
+    -- teleport_object with vertex IDs from another level corrupts the
+    -- entity's navigation state in the local A-Life sim.
     local sim = alife()
     if sim then
         local se_obj = sim:object(local_id)
         if se_obj then
+            local gvid = se_obj.m_game_vertex_id
+            local gg = game_graph()
+            if gg and gg:valid_vertex_id(gvid) and db.actor then
+                local actor_gvid = db.actor:game_vertex_id()
+                if gg:valid_vertex_id(actor_gvid) and
+                   gg:vertex(gvid):level_id() ~= gg:vertex(actor_gvid):level_id() then
+                    return
+                end
+            end
             local pos = vector():set(x, y, z)
-            sim:teleport_object(local_id, se_obj.m_game_vertex_id,
-                se_obj.m_level_vertex_id, pos)
+            sim:teleport_object(local_id, gvid, se_obj.m_level_vertex_id, pos)
         end
     end
 end
