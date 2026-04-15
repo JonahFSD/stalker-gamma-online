@@ -97,7 +97,7 @@ function UIMultiplayerMenu:OnHost()
         return
     end
 
-    if mp_core.is_client() then
+    if mp_core.is_client() or mp_core.is_connecting() then
         self:SetStatus("Disconnect first", "e02020")
         return
     end
@@ -122,8 +122,8 @@ function UIMultiplayerMenu:OnConnect()
         return
     end
 
-    if mp_core.is_client() then
-        self:SetStatus("Already connected", "e8a020")
+    if mp_core.is_client() or mp_core.is_connecting() then
+        self:SetStatus("Already connected/connecting", "e8a020")
         return
     end
 
@@ -143,7 +143,7 @@ function UIMultiplayerMenu:OnConnect()
 end
 
 function UIMultiplayerMenu:OnDisconnect()
-    if not mp_core.is_client() then
+    if not mp_core.is_client() and not mp_core.is_connecting() then
         self:SetStatus("Not connected", "e8a020")
         return
     end
@@ -181,6 +181,11 @@ function UIMultiplayerMenu:OnStatus()
         local mappings = mp_client_state.get_id_map_count()
         self:SetStatus("Connected to " .. ip .. ":" .. port, "20e040")
         self:SetInfo(entities .. " entities, " .. mappings .. " ID mappings")
+    elseif mp_core.is_connecting() then
+        local ip = mp_core.get_host_ip() or "?"
+        local port = mp_core.get_host_port() or 0
+        self:SetStatus("Connecting to " .. ip .. ":" .. port .. "...", "e8a020")
+        self:SetInfo("Waiting for host response")
     else
         self:SetStatus("Idle — not connected", "c0c0c0")
         self:SetInfo("")

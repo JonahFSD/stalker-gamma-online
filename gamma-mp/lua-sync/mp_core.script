@@ -10,7 +10,8 @@ local MP_PORT_DEFAULT = 44140
 -- State
 local _is_initialized = false
 local _is_host = false
-local _is_client = false
+local _is_connecting = false  -- GNS connect() called, awaiting confirmation
+local _is_client = false      -- connection confirmed, A-Life suppressed, fully active
 local _host_ip = nil
 local _host_port = MP_PORT_DEFAULT
 
@@ -44,7 +45,7 @@ function mp_shutdown()
     if not _is_initialized then return end
 
     if _is_host then mp_stop_host() end
-    if _is_client then mp_disconnect() end
+    if _is_client or _is_connecting then mp_disconnect() end
 
     gns.shutdown()
     _is_initialized = false
@@ -101,13 +102,26 @@ function mp_connect(ip, port)
 
     local result = gns.connect(ip, port)
     if result ~= 0 then
-        printf("[GAMMA MP] ERROR: Failed to connect to %s:%d", ip, port)
+        printf("[GAMMA MP] ERROR: Failed to initiate connection to %s:%d", ip, port)
         return false
     end
 
-    _is_client = true
+    -- Connection is ASYNC. We're now in "connecting" state.
+    -- Do NOT suppress A-Life or block saves yet — wait for EVENT_CONNECTED
+    -- in mp_on_connection_event() before touching game state.
+    _is_connecting = true
     _host_ip = ip
     _host_port = port
+
+    printf("[GAMMA MP] Connecting to %s:%d (awaiting confirmation)...", ip, port)
+    return true
+end
+
+--- Called when GNS confirms the connection (EVENT_CONNECTED).
+--- NOW we suppress A-Life, block saves, and register callbacks.
+function mp_activate_client_mode()
+    _is_connecting = false
+    _is_client = true
 
     -- Suppress A-Life on client
     if alife() then
@@ -121,27 +135,51 @@ function mp_connect(ip, port)
     -- Block saves to prevent corruption
     block_client_saves()
 
-    printf("[GAMMA MP] Connecting to %s:%d...", ip, port)
-    return true
+    printf("[GAMMA MP] Connected — client mode active")
+end
+
+--- Called when connection fails before being established (EVENT_REJECTED).
+--- Clean up the connecting state without touching A-Life or saves
+--- (because we never modified them).
+function mp_on_connect_failed(reason)
+    printf("[GAMMA MP] Connection failed: %s", reason or "unknown")
+
+    _is_connecting = false
+    _host_ip = nil
+
+    -- Tell GNS to clean up the connection handle
+    gns.disconnect()
+
+    if db.actor then
+        news_manager.send_tip(db.actor,
+            "MP connection failed: " .. (reason or "unknown"),
+            nil, nil, 5000)
+    end
 end
 
 function mp_disconnect()
-    if not _is_client then return end
+    -- Handle disconnect from either connecting or connected state
+    if not _is_client and not _is_connecting then return end
 
-    -- Re-enable A-Life
-    if alife() then
-        alife():set_mp_client_mode(false)
-        printf("[GAMMA MP] A-Life re-enabled")
+    -- Only undo game state changes if we were fully connected
+    -- (connecting state never touched A-Life or saves)
+    if _is_client then
+        -- Re-enable A-Life
+        if alife() then
+            alife():set_mp_client_mode(false)
+            printf("[GAMMA MP] A-Life re-enabled")
+        end
+
+        -- Unregister spawn interception
+        UnregisterScriptCallback("server_entity_on_register", on_client_entity_registered)
+
+        -- Restore saves
+        restore_client_saves()
     end
-
-    -- Unregister spawn interception
-    UnregisterScriptCallback("server_entity_on_register", on_client_entity_registered)
-
-    -- Restore saves
-    restore_client_saves()
 
     gns.disconnect()
     _is_client = false
+    _is_connecting = false
     _host_ip = nil
     printf("[GAMMA MP] Disconnected")
 end
@@ -249,6 +287,7 @@ end
 -- ============================================================================
 
 function is_mp_active()   return _is_host or _is_client end
+function is_connecting()  return _is_connecting end
 function is_host()        return _is_host end
 function is_client()      return _is_client end
 function get_host_ip()    return _host_ip end
@@ -259,7 +298,7 @@ function get_host_port()  return _host_port end
 -- ============================================================================
 
 function mp_update()
-    if not is_mp_active() then return end
+    if not _is_host and not _is_client and not _is_connecting then return end
 
     -- Process connection events
     local events = gns.poll_events()
@@ -289,18 +328,39 @@ end
 
 function mp_on_connection_event(evt)
     if evt.event_type == 1 then -- Connected
-        printf("[GAMMA MP] Connection: %s", evt.info)
+        printf("[GAMMA MP] Connection confirmed: %s", evt.info)
         if _is_host then
             mp_host_events.send_full_state(evt.conn_id)
+        elseif _is_connecting then
+            -- Connection confirmed — NOW activate client mode
+            mp_activate_client_mode()
+            if db.actor then
+                news_manager.send_tip(db.actor,
+                    "Connected to " .. (_host_ip or "host") .. ":" .. _host_port,
+                    nil, nil, 5000)
+            end
         end
+
     elseif evt.event_type == 2 then -- Disconnected
         printf("[GAMMA MP] Disconnection: %s", evt.info)
         if _is_client then
+            -- Was fully connected, need full cleanup
             mp_disconnect()
+            if db.actor then
+                news_manager.send_tip(db.actor,
+                    "Disconnected from host",
+                    nil, nil, 5000)
+            end
+        elseif _is_connecting then
+            -- Failed during connection attempt, lightweight cleanup
+            mp_on_connect_failed(evt.info)
         end
+
     elseif evt.event_type == 3 then -- Rejected
         printf("[GAMMA MP] Connection rejected: %s", evt.info)
-        _is_client = false
+        if _is_connecting then
+            mp_on_connect_failed(evt.info)
+        end
     end
 end
 
