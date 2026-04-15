@@ -278,7 +278,6 @@ end
 -- ============================================================================
 
 function on_mp_key_press(key)
-    printf("[GAMMA MP] key press: %s (F10 = %s)", tostring(key), tostring(DIK_keys.DIK_F10))
     if key ~= DIK_keys.DIK_F10 then return end
     mp_ui.open_menu()
 end
