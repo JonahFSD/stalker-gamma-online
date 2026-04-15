@@ -35,7 +35,9 @@ local _network_entities = {}  -- host_id -> { section, last_pos, ... }
 local _remote_players = {}    -- conn_id -> { id, pos, ... }
 
 -- Pending spawns waiting for server_entity_on_register callback
-local _pending_spawns = {}    -- section_key -> host_id (see on_entity_spawn)
+-- Key: "section_x_y_z" (full float precision) -> FIFO list of host_ids
+-- List-based to handle same-section entities at identical positions (stacked loot, etc.)
+local _pending_spawns = {}    -- section_key -> { host_id, host_id, ... }
 
 -- Cleanup state
 local _cleanup_ids = {}       -- array of entity IDs to delete
@@ -93,14 +95,18 @@ function on_local_entity_registered(se_obj)
     local section = se_obj:section_name()
     local pos = se_obj.position
 
-    -- Build the same key we stored in _pending_spawns
-    local key = string.format("%s_%.0f_%.0f_%.0f",
+    -- Build the same key we stored in _pending_spawns (full float precision)
+    local key = string.format("%s_%.4f_%.4f_%.4f",
         section, pos.x, pos.y, pos.z)
 
-    local host_id = _pending_spawns[key]
-    if host_id then
+    local list = _pending_spawns[key]
+    if list and #list > 0 then
+        -- FIFO: pop the first host_id that was queued for this key
+        local host_id = table.remove(list, 1)
+        if #list == 0 then
+            _pending_spawns[key] = nil
+        end
         map_id(host_id, se_obj.id)
-        _pending_spawns[key] = nil
         printf("[GAMMA MP] ID mapped: host %d -> local %d (%s)", host_id, se_obj.id, section)
     end
 end
@@ -151,10 +157,12 @@ function do_entity_spawn(data)
     )
 
     -- Store a pending spawn key so on_local_entity_registered can map the ID.
-    -- Key = section + rounded position (position is quantized in create())
-    local key = string.format("%s_%.0f_%.0f_%.0f",
+    -- Full float precision — engine preserves position exactly (float32).
+    -- List-based FIFO per key to handle same-section entities at identical coords.
+    local key = string.format("%s_%.4f_%.4f_%.4f",
         data.section, pos.x, pos.y, pos.z)
-    _pending_spawns[key] = host_id
+    _pending_spawns[key] = _pending_spawns[key] or {}
+    _pending_spawns[key][#_pending_spawns[key] + 1] = host_id
 
     local parent_id = data.parent_id
     if parent_id then
