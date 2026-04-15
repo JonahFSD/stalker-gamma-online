@@ -186,20 +186,20 @@ function do_entity_spawn(data)
         -- parent_id is also a host ID — resolve it
         local local_parent = resolve_id(parent_id)
         if local_parent then
-            sim:create(data.section, pos,
+            mp_alife_guard.internal_create(sim, data.section, pos,
                 data.lvid or 0,
                 data.gvid or 0,
                 local_parent)
         else
             -- Parent not yet created; spawn in world, will get picked up later
             printf("[GAMMA MP] WARNING: Parent %d not mapped, spawning in world", parent_id)
-            sim:create(data.section, pos,
+            mp_alife_guard.internal_create(sim, data.section, pos,
                 data.lvid or 0,
                 data.gvid or 0)
         end
     else
         -- World entity
-        sim:create(data.section, pos,
+        mp_alife_guard.internal_create(sim, data.section, pos,
             data.lvid or 0,
             data.gvid or 0)
     end
@@ -274,7 +274,7 @@ function on_entity_despawn(data)
         if sim then
             local se_obj = sim:object(local_id)
             if se_obj then
-                sim:release(se_obj, true)
+                mp_alife_guard.internal_release(sim, se_obj, true)
             end
         end
         unmap_id(host_id)
@@ -537,7 +537,7 @@ function tick_cleanup()
 
         local se_obj = sim:object(id)
         if se_obj then
-            sim:release(se_obj, true)
+            mp_alife_guard.internal_release(sim, se_obj, true)
             released = released + 1
         end
     end

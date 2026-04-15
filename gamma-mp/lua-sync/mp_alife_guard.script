@@ -1,0 +1,296 @@
+--- mp_alife_guard.script: Intercept alife():create() and alife():release() on clients
+---
+--- PROBLEM (Bug #11):
+--- 80+ mods call alife():create() and alife():release() directly. On the client,
+--- creates produce untracked ghost entities; releases destroy host-synced entities.
+--- The _g.script wrappers (alife_create, alife_release, etc.) catch ~50 mods, but
+--- the rest call the engine methods directly on the alife() object.
+---
+--- SOLUTION: Two-layer interception.
+---
+--- Layer 1 — Patch the alife class metatable.
+---   alife() returns a luabind C++ userdata. All instances share a class metatable.
+---   We patch metatable.__index once to intercept "create" and "release" lookups.
+---   This catches ALL code paths — any Lua code calling sim:create() or sim:release()
+---   hits the patched metatable, whether it went through a wrapper or not.
+---
+--- Layer 2 — Override the _g.script global wrappers.
+---   Replace alife_create(), alife_release(), alife_release_id(), alife_create_item()
+---   with guarded versions that early-return on client. Belt-and-suspenders — avoids
+---   wasted parameter parsing and callback side effects inside the wrappers.
+---
+--- BYPASS for our sync code:
+---   Before patching, we save references to the original create and release methods.
+---   mp_client_state calls internal_create() / internal_release() which use those
+---   saved references directly, bypassing the guard entirely.
+
+-- Saved originals (metatable)
+local _orig_mt = nil            -- alife class metatable
+local _orig_index = nil         -- original __index (function or table)
+local _orig_create = nil        -- original create method
+local _orig_release = nil       -- original release method
+
+-- Saved originals (_g.script global wrappers)
+local _orig_alife_create = nil
+local _orig_alife_release = nil
+local _orig_alife_release_id = nil
+local _orig_alife_create_item = nil
+
+local _installed = false
+
+-- Block counters (for status/debug)
+local _block_count_create = 0
+local _block_count_release = 0
+local _LOG_LIMIT = 20  -- log first N blocks per type, then go silent
+
+-- ============================================================================
+-- Blocked stubs (returned in place of the real methods on client)
+-- ============================================================================
+
+local function blocked_create(self, ...)
+    _block_count_create = _block_count_create + 1
+    if _block_count_create <= _LOG_LIMIT then
+        printf("[GAMMA MP] BLOCKED alife():create() on client (call #%d)", _block_count_create)
+        if _block_count_create == _LOG_LIMIT then
+            printf("[GAMMA MP] (further create blocks will be silent)")
+        end
+    end
+    return nil
+end
+
+local function blocked_release(self, ...)
+    _block_count_release = _block_count_release + 1
+    if _block_count_release <= _LOG_LIMIT then
+        printf("[GAMMA MP] BLOCKED alife():release() on client (call #%d)", _block_count_release)
+        if _block_count_release == _LOG_LIMIT then
+            printf("[GAMMA MP] (further release blocks will be silent)")
+        end
+    end
+end
+
+-- ============================================================================
+-- Check: is_mp_client() with nil-safe access
+-- ============================================================================
+
+local function client_check()
+    return _G.is_mp_client and _G.is_mp_client()
+end
+
+-- ============================================================================
+-- Layer 1: Metatable patch
+-- ============================================================================
+
+local function install_metatable_patch()
+    local sim = alife()
+    if not sim then
+        printf("[GAMMA MP] alife_guard: alife() not available — metatable patch deferred")
+        return false
+    end
+
+    _orig_mt = getmetatable(sim)
+    if not _orig_mt then
+        printf("[GAMMA MP] alife_guard WARNING: alife() has no metatable — metatable patch skipped")
+        return false
+    end
+
+    _orig_index = _orig_mt.__index
+    if not _orig_index then
+        printf("[GAMMA MP] alife_guard WARNING: metatable has no __index — metatable patch skipped")
+        return false
+    end
+
+    if type(_orig_index) == "function" then
+        -- luabind typically uses a C function for __index.
+        -- Save original methods by calling the index function directly.
+        _orig_create = _orig_index(sim, "create")
+        _orig_release = _orig_index(sim, "release")
+
+        _orig_mt.__index = function(self, key)
+            if key == "create" and client_check() then
+                return blocked_create
+            elseif key == "release" and client_check() then
+                return blocked_release
+            end
+            return _orig_index(self, key)
+        end
+
+        printf("[GAMMA MP] alife_guard: metatable __index wrapped (function)")
+        return true
+
+    elseif type(_orig_index) == "table" then
+        -- __index is a method table — patch entries directly.
+        _orig_create = _orig_index.create
+        _orig_release = _orig_index.release
+
+        _orig_index.create = function(self, ...)
+            if client_check() then
+                return blocked_create(self, ...)
+            end
+            return _orig_create(self, ...)
+        end
+
+        _orig_index.release = function(self, ...)
+            if client_check() then
+                return blocked_release(self, ...)
+            end
+            return _orig_release(self, ...)
+        end
+
+        printf("[GAMMA MP] alife_guard: metatable __index patched (table)")
+        return true
+
+    else
+        printf("[GAMMA MP] alife_guard WARNING: __index is type '%s' — metatable patch skipped",
+            type(_orig_index))
+        return false
+    end
+end
+
+local function uninstall_metatable_patch()
+    if not _orig_mt or not _orig_index then return end
+
+    if type(_orig_index) == "function" then
+        _orig_mt.__index = _orig_index
+    elseif type(_orig_index) == "table" then
+        if _orig_create then _orig_index.create = _orig_create end
+        if _orig_release then _orig_index.release = _orig_release end
+    end
+
+    _orig_mt = nil
+    _orig_index = nil
+end
+
+-- ============================================================================
+-- Layer 2: _g.script global wrapper overrides
+-- ============================================================================
+
+local function install_global_overrides()
+    -- alife_create(sec, pos, lid, gid, id, state)
+    if alife_create then
+        _orig_alife_create = alife_create
+        _G.alife_create = function(...)
+            if client_check() then
+                blocked_create()
+                return nil
+            end
+            return _orig_alife_create(...)
+        end
+    end
+
+    -- alife_release(se_obj, msg)
+    if alife_release then
+        _orig_alife_release = alife_release
+        _G.alife_release = function(...)
+            if client_check() then
+                blocked_release()
+                return nil
+            end
+            return _orig_alife_release(...)
+        end
+    end
+
+    -- alife_release_id(id, msg)
+    if alife_release_id then
+        _orig_alife_release_id = alife_release_id
+        _G.alife_release_id = function(...)
+            if client_check() then
+                blocked_release()
+                return nil
+            end
+            return _orig_alife_release_id(...)
+        end
+    end
+
+    -- alife_create_item(section, obj, t)
+    if alife_create_item then
+        _orig_alife_create_item = alife_create_item
+        _G.alife_create_item = function(...)
+            if client_check() then
+                blocked_create()
+                return nil
+            end
+            return _orig_alife_create_item(...)
+        end
+    end
+
+    printf("[GAMMA MP] alife_guard: global wrappers overridden (alife_create/release/release_id/create_item)")
+end
+
+local function uninstall_global_overrides()
+    if _orig_alife_create then _G.alife_create = _orig_alife_create end
+    if _orig_alife_release then _G.alife_release = _orig_alife_release end
+    if _orig_alife_release_id then _G.alife_release_id = _orig_alife_release_id end
+    if _orig_alife_create_item then _G.alife_create_item = _orig_alife_create_item end
+
+    _orig_alife_create = nil
+    _orig_alife_release = nil
+    _orig_alife_release_id = nil
+    _orig_alife_create_item = nil
+end
+
+-- ============================================================================
+-- Public API
+-- ============================================================================
+
+--- Install both layers of interception. Call once from mp_core.on_game_start().
+--- Safe to call multiple times (idempotent).
+function install()
+    if _installed then return true end
+
+    local mt_ok = install_metatable_patch()
+    install_global_overrides()
+
+    _installed = true
+
+    if mt_ok then
+        printf("[GAMMA MP] alife_guard: fully installed (metatable + globals)")
+    else
+        printf("[GAMMA MP] alife_guard: partially installed (globals only — metatable patch failed)")
+    end
+
+    return mt_ok
+end
+
+--- Remove all patches. Call on shutdown if needed.
+function uninstall()
+    if not _installed then return end
+
+    uninstall_metatable_patch()
+    uninstall_global_overrides()
+
+    _orig_create = nil
+    _orig_release = nil
+    _installed = false
+
+    printf("[GAMMA MP] alife_guard: uninstalled")
+end
+
+--- Call the REAL alife():create(), bypassing the guard.
+--- Used by mp_client_state for host-directed entity spawns.
+function internal_create(sim, ...)
+    if _orig_create then
+        return _orig_create(sim, ...)
+    end
+    -- Fallback: guard not installed or metatable patch failed.
+    -- Call directly — if the metatable guard IS active this will be blocked,
+    -- but that shouldn't happen since _orig_create is always set when the
+    -- metatable patch succeeds.
+    return sim:create(...)
+end
+
+--- Call the REAL alife():release(), bypassing the guard.
+--- Used by mp_client_state for host-directed entity despawns and cleanup.
+function internal_release(sim, ...)
+    if _orig_release then
+        return _orig_release(sim, ...)
+    end
+    return sim:release(...)
+end
+
+function is_installed()
+    return _installed
+end
+
+function get_block_counts()
+    return _block_count_create, _block_count_release
+end

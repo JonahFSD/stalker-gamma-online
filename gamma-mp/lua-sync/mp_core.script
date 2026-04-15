@@ -393,6 +393,8 @@ function mp_status()
         printf("  Connected to: %s:%d", _host_ip or "?", _host_port)
         printf("  Network entities: %d", mp_client_state.get_entity_count())
         printf("  ID mappings: %d", mp_client_state.get_id_map_count())
+        local bc, br = mp_alife_guard.get_block_counts()
+        printf("  Blocked creates: %d, releases: %d", bc, br)
     end
 end
 
@@ -499,6 +501,9 @@ function on_game_start()
     _G.is_mp_active = function()
         return _is_host or _is_client
     end
+
+    -- Install alife() guard: blocks create/release from mods when client (Bug #11)
+    mp_alife_guard.install()
 
     if not level.set_game_time then
         printf("[GAMMA MP] WARNING: level.set_game_time not found — engine patch missing. Time sync will use fallback (forward-only wraparound).")

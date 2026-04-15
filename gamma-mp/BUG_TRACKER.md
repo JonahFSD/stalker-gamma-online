@@ -70,12 +70,15 @@ Last updated: 2026-04-15
 **Problem:** Code calls `obj:force_set_position(target_pos)`. If this game_object method doesn't exist, online entities never move.
 **Fix:** Test in-game: `lua: db.actor.force_set_position`. Add safe wrapper with fallback to `obj:set_position()` or `obj:set_movement_position()`.
 
-## Bug #11: Direct alife() Calls from Mods (OPEN)
+## Bug #11: Direct alife() Calls from Mods (FIXED)
 **Severity:** CRITICAL
-**File:** Systemic — 80+ mod .script files
+**File:** `lua-sync/mp_alife_guard.script` (new), `lua-sync/mp_client_state.script`, `lua-sync/mp_core.script`
 **Problem:** Mods call `alife():create()` and `alife():release()` directly. On client, these bypass sync: creates produce untracked entities, releases destroy host-synced entities.
-**Mitigation (partial):** `_g.script` wrapper with `is_mp_client()` guards blocks the most common paths. But mods that import alife() directly bypass this.
-**Full fix:** Intercept at the metatable level — wrap `alife()` return value with a proxy that blocks create/release on client. Requires careful engineering to not break mod introspection.
+**Fix:** Two-layer interception in `mp_alife_guard.script`, installed once at `on_game_start()`:
+- **Layer 1 (metatable):** Patches the alife class metatable's `__index` to intercept `create` and `release` lookups. When `is_mp_client()` is true, returns a no-op stub instead of the real method. Catches ALL code paths — any Lua code calling `sim:create()` or `sim:release()` hits the patch. Handles both function-type `__index` (luabind C dispatcher) and table-type `__index`. Falls back gracefully if `getmetatable()` returns nil.
+- **Layer 2 (globals):** Overrides `alife_create()`, `alife_release()`, `alife_release_id()`, `alife_create_item()` with guarded versions that early-return on client. Avoids wasted parameter parsing and callback side effects in the `_g.script` wrappers.
+- **Bypass:** Original `create`/`release` method references saved before patching. `mp_client_state` calls `mp_alife_guard.internal_create()` / `internal_release()` for host-directed operations, bypassing the guard entirely.
+- Guard is dynamic (`is_mp_client()` checked per call) — works across connect/disconnect cycles without reinstall. First 20 blocks per type are logged, then silenced.
 
 ## Bug #12: Level Transitions (FIXED)
 **Severity:** CRITICAL

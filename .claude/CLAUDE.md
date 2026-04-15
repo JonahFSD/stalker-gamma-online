@@ -23,7 +23,7 @@ The host IS singleplayer running normally. Our code watches A-Life callbacks (sp
 All compiled and deployed:
 - AnomalyDX11.exe (patched, copied to AVX slot for MO2): `C:\ANOMALY\bin\`
 - gns_bridge.dll + 5 dependency DLLs: `C:\ANOMALY\bin\`
-- 4 Lua .script files: `C:\GAMMA\overwrite\gamedata\scripts\`
+- 5 Lua .script files: `C:\GAMMA\overwrite\gamedata\scripts\`
 - UI XML: `C:\GAMMA\overwrite\gamedata\configs\ui\`
 
 ---
@@ -40,6 +40,7 @@ Use this to jump directly to the right file. Don't grep for things that are list
 | `mp_protocol.script` | Message serialization, dispatch | `serialize_event(type,data)`, `serialize_positions(type,entities)`, `deserialize(str)`, `on_message(conn_id,raw,size)`, `dispatch_client(type,data,conn)`, `dispatch_host(type,data,conn)`, `send_event()`, `broadcast_event()`, `send_snapshot()`, `broadcast_snapshot()` | `MSG` table (ES/ED/ER/SA/IC/WS/TS/FS/PE/EP/PP/PS) |
 | `mp_host_events.script` | Host-side: hooks callbacks, tracks entities, broadcasts events+snapshots | `register_callbacks()`, `unregister_callbacks()`, `build_entity_registry()`, `on_entity_register(se_obj,source_tag)`, `on_entity_unregister(se_obj)`, `on_npc_death(npc,killer)`, `send_snapshots()`, `send_environment_sync()`, `send_full_state(conn_id)` | `_tracked_entities` (id->true), `_tracked_count`, `_clients` (conn_id->data) |
 | `mp_client_state.script` | Client-side: applies host events, ID mapping, sync state machine | `resolve_id(host_id)`, `map_id(host,local)`, `unmap_id(host)`, `on_local_entity_registered(se_obj)`, `on_entity_spawn(data)`, `do_entity_spawn(data)`, `on_entity_death(data)`, `on_entity_despawn(data)`, `on_entity_positions(entities)`, `apply_entity_position(host_id,x,y,z,h)`, `on_full_state(data)`, `client_tick()`, `tick_cleanup()`, `tick_sync()` | `_host_to_local`, `_local_to_host`, `_network_entities`, `_pending_spawns` (key->list), `_pending_positions`, `_sync_state` (IDLE/CLEANING/SYNCING/ACTIVE), `_cleanup_ids`, `_spawn_queue` |
+| `mp_alife_guard.script` | Intercepts alife():create()/release() on client (Bug #11) | `install()`, `uninstall()`, `internal_create(sim,...)`, `internal_release(sim,...)`, `get_block_counts()` | `_orig_create`, `_orig_release`, `_installed` |
 | `mp_ui.script` | F10 in-game menu (Host/Connect/Disconnect/Status/Shutdown) | `UIMultiplayerMenu:InitControls()`, `OnHost()`, `OnConnect()`, `OnDisconnect()`, `OnStatus()`, `OnShutdown()`, `open_menu()`, `close_menu()` | `GUI` singleton |
 
 ### UI Layout
