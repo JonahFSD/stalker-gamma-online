@@ -312,6 +312,11 @@ function mp_update()
         mp_protocol.on_message(msg.conn_id, msg.data, msg.size)
     end
 
+    -- Client: drive the cleanup/sync state machine
+    if _is_client then
+        mp_client_state.client_tick()
+    end
+
     -- Host: send periodic snapshots
     if _is_host then
         local now = time_global()

@@ -179,8 +179,14 @@ function UIMultiplayerMenu:OnStatus()
         local port = mp_core.get_host_port() or 0
         local entities = mp_client_state.get_entity_count()
         local mappings = mp_client_state.get_id_map_count()
-        self:SetStatus("Connected to " .. ip .. ":" .. port, "20e040")
-        self:SetInfo(entities .. " entities, " .. mappings .. " ID mappings")
+        local sync = mp_client_state.get_sync_state_name()
+        if sync == "active" then
+            self:SetStatus("Connected to " .. ip .. ":" .. port, "20e040")
+            self:SetInfo(entities .. " entities, " .. mappings .. " ID mappings")
+        else
+            self:SetStatus("Connected — " .. sync, "e8a020")
+            self:SetInfo(entities .. " entities, " .. mappings .. " mappings (syncing...)")
+        end
     elseif mp_core.is_connecting() then
         local ip = mp_core.get_host_ip() or "?"
         local port = mp_core.get_host_port() or 0

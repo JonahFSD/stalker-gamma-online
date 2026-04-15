@@ -8,6 +8,23 @@
 ---   _host_to_local[host_id] -> local_id
 ---   _local_to_host[local_id] -> host_id
 --- ALL lookups of entities received from the network go through resolve_id().
+---
+--- STATE MACHINE:
+---   IDLE → (on_full_state) → CLEANING → (all deleted) → SYNCING → (queue drained) → ACTIVE
+---
+---   CLEANING: Deleting pre-existing save entities in batches. Incoming ENTITY_SPAWN
+---             messages are queued. Position/death/despawn messages are dropped (stale entities).
+---   SYNCING:  Processing queued ENTITY_SPAWN messages in batches. Position updates
+---             applied to any entities that exist. Death/despawn applied normally.
+---   ACTIVE:   Normal operation. All messages applied immediately.
+
+-- Client sync states
+local STATE_IDLE     = 0
+local STATE_CLEANING = 1  -- deleting pre-existing entities
+local STATE_SYNCING  = 2  -- processing queued spawns
+local STATE_ACTIVE   = 3  -- normal operation
+
+local _sync_state = STATE_IDLE
 
 -- ID mapping tables
 local _host_to_local = {}   -- host_id -> local_id
@@ -19,6 +36,16 @@ local _remote_players = {}    -- conn_id -> { id, pos, ... }
 
 -- Pending spawns waiting for server_entity_on_register callback
 local _pending_spawns = {}    -- section_key -> host_id (see on_entity_spawn)
+
+-- Cleanup state
+local _cleanup_ids = {}       -- array of entity IDs to delete
+local _cleanup_index = 0      -- current position in _cleanup_ids
+local _cleanup_batch = 50     -- entities to release per frame
+
+-- Spawn queue (messages received during CLEANING phase)
+local _spawn_queue = {}       -- array of spawn data tables
+local _spawn_queue_index = 0  -- current position during SYNCING
+local _spawn_batch = 20       -- entities to create per frame (lower than cleanup — create is heavier)
 
 -- ============================================================================
 -- ID Mapping
@@ -82,9 +109,22 @@ end
 -- Entity Spawn (from host)
 -- ============================================================================
 
+--- Public entry point. Routes to queue or immediate execution based on state.
 function on_entity_spawn(data)
     if not data.id or not data.section then return end
 
+    if _sync_state == STATE_CLEANING or _sync_state == STATE_IDLE then
+        -- Queue for later — we're still deleting pre-existing entities
+        _spawn_queue[#_spawn_queue + 1] = data
+        return
+    end
+
+    -- SYNCING or ACTIVE: execute immediately
+    do_entity_spawn(data)
+end
+
+--- Actual spawn logic. Called directly in ACTIVE state, or from tick_sync().
+function do_entity_spawn(data)
     local host_id = data.id
     local sim = alife()
     if not sim then return end
@@ -148,6 +188,8 @@ end
 
 function on_entity_death(data)
     if not data.id then return end
+    -- Drop during CLEANING — these entities are being wiped anyway
+    if _sync_state == STATE_CLEANING then return end
 
     local host_id = data.id
     local local_id = resolve_id(host_id)
@@ -194,6 +236,8 @@ end
 
 function on_entity_despawn(data)
     if not data.id then return end
+    -- Drop during CLEANING — these entities are being wiped anyway
+    if _sync_state == STATE_CLEANING then return end
 
     local host_id = data.id
     local local_id = resolve_id(host_id)
@@ -218,6 +262,9 @@ end
 
 function on_entity_positions(entities)
     if not entities then return end
+
+    -- Drop position updates during CLEANING — entities are being deleted
+    if _sync_state == STATE_CLEANING then return end
 
     for _, e in ipairs(entities) do
         apply_entity_position(e.id, e.x, e.y, e.z, e.h)
@@ -333,9 +380,130 @@ function on_full_state(data)
     _local_to_host = {}
     _network_entities = {}
     _pending_spawns = {}
+    _spawn_queue = {}
+    _spawn_queue_index = 0
 
     if data.entity_count then
         printf("[GAMMA MP] Expecting %d entities", data.entity_count)
+    end
+
+    -- Build list of all existing entities to delete (except the player).
+    -- This prevents double world state: save entities + host entities.
+    local sim = alife()
+    if not sim then
+        _sync_state = STATE_ACTIVE
+        return
+    end
+
+    local actor_id = db.actor and db.actor:id() or -1
+    _cleanup_ids = {}
+    _cleanup_index = 1
+
+    -- Single linear scan to collect IDs. After this, batched deletion.
+    for id = 0, 65534 do
+        if id ~= actor_id then
+            local se_obj = sim:object(id)
+            if se_obj then
+                _cleanup_ids[#_cleanup_ids + 1] = id
+            end
+        end
+    end
+
+    local count = #_cleanup_ids
+    printf("[GAMMA MP] Cleanup: %d pre-existing entities to remove (player excluded)", count)
+
+    if count == 0 then
+        -- Nothing to clean, go straight to syncing
+        _sync_state = STATE_SYNCING
+        printf("[GAMMA MP] No cleanup needed, entering SYNCING state")
+    else
+        _sync_state = STATE_CLEANING
+        printf("[GAMMA MP] Entering CLEANING state (%d entities, ~%d frames)",
+            count, math.ceil(count / _cleanup_batch))
+    end
+end
+
+-- ============================================================================
+-- Sync State Machine (called from mp_core.mp_update via client_tick)
+-- ============================================================================
+
+--- Called every frame by mp_core while client is active.
+--- Drives the CLEANING → SYNCING → ACTIVE state transitions.
+function client_tick()
+    if _sync_state == STATE_CLEANING then
+        tick_cleanup()
+    elseif _sync_state == STATE_SYNCING then
+        tick_sync()
+    end
+    -- STATE_ACTIVE and STATE_IDLE: nothing to tick
+end
+
+function tick_cleanup()
+    local sim = alife()
+    if not sim then
+        _sync_state = STATE_ACTIVE
+        return
+    end
+
+    local released = 0
+    while _cleanup_index <= #_cleanup_ids and released < _cleanup_batch do
+        local id = _cleanup_ids[_cleanup_index]
+        _cleanup_index = _cleanup_index + 1
+
+        local se_obj = sim:object(id)
+        if se_obj then
+            sim:release(se_obj, true)
+            released = released + 1
+        end
+    end
+
+    if _cleanup_index > #_cleanup_ids then
+        -- Cleanup done
+        _cleanup_ids = {}
+        _cleanup_index = 0
+        _spawn_queue_index = 1
+        _sync_state = STATE_SYNCING
+        printf("[GAMMA MP] Cleanup complete. Entering SYNCING state (%d queued spawns)",
+            #_spawn_queue)
+    end
+end
+
+function tick_sync()
+    local processed = 0
+    while _spawn_queue_index <= #_spawn_queue and processed < _spawn_batch do
+        local data = _spawn_queue[_spawn_queue_index]
+        _spawn_queue_index = _spawn_queue_index + 1
+
+        do_entity_spawn(data)
+        processed = processed + 1
+    end
+
+    if _spawn_queue_index > #_spawn_queue then
+        -- All queued spawns processed
+        _spawn_queue = {}
+        _spawn_queue_index = 0
+        _sync_state = STATE_ACTIVE
+        printf("[GAMMA MP] Sync complete. Entering ACTIVE state (%d entities, %d mappings)",
+            get_entity_count(), get_id_map_count())
+
+        if db.actor then
+            news_manager.send_tip(db.actor,
+                "World sync complete — " .. get_entity_count() .. " entities",
+                nil, nil, 5000)
+        end
+    end
+end
+
+function get_sync_state()
+    return _sync_state
+end
+
+function get_sync_state_name()
+    if _sync_state == STATE_IDLE then return "idle"
+    elseif _sync_state == STATE_CLEANING then return "cleaning"
+    elseif _sync_state == STATE_SYNCING then return "syncing"
+    elseif _sync_state == STATE_ACTIVE then return "active"
+    else return "unknown"
     end
 end
 
