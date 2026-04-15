@@ -58,11 +58,11 @@ Last updated: 2026-04-15
 **Problem:** Code calls `sim:kill_entity(se_obj, killer_se)`. If this API doesn't exist in the engine build, it silently errors or crashes.
 **Fix:** Test in-game: `lua: alife():kill_entity`. Add safe wrapper with fallback to `sim:release(se_obj, true)`.
 
-## Bug #9: Position Snapshot Cap (OPEN)
+## Bug #9: Position Snapshot Cap (FIXED)
 **Severity:** HIGH
-**File:** `lua-sync/mp_host_events.script` lines 240-261
+**File:** `lua-sync/mp_host_events.script`
 **Problem:** `send_snapshots()` caps at 100 entities per frame via `for id, _ in pairs()` + `break`. With 2000+ tracked entities, `pairs()` iteration order is non-deterministic (Lua hash table), so the SAME 100 entities could be sent every frame while others never update.
-**Fix:** Implement round-robin with a persistent index. Convert tracked entities to an indexed array periodically, advance start position each frame.
+**Fix:** Added `_tracked_ids` indexed array (maintained via O(1) swap-remove in `track_entity`/`untrack_entity`) and `_snapshot_cursor` that advances each frame. `send_snapshots()` now walks the array starting at the cursor, wrapping around, ensuring all entities get position updates across frames. With 2000 entities at 100/frame, full rotation takes 20 frames (1 second at 20Hz).
 
 ## Bug #10: force_set_position API Existence (OPEN)
 **Severity:** CRITICAL (if missing)

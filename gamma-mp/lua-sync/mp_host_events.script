@@ -17,6 +17,13 @@ local _clients = {}
 local _tracked_entities = {}  -- id -> true
 local _tracked_count = 0
 
+-- Round-robin snapshot state (Bug #9 fix)
+-- _tracked_ids is a flat array mirroring _tracked_entities for indexed access.
+-- _snapshot_cursor is the start index for the next send_snapshots() call.
+local _tracked_ids = {}       -- integer-indexed array of entity IDs
+local _tracked_id_index = {}  -- id -> position in _tracked_ids (for O(1) removal)
+local _snapshot_cursor = 1
+
 -- Environment sync timer
 local _last_env_sync = nil
 
@@ -38,6 +45,10 @@ local function track_entity(id)
     if not _tracked_entities[id] then
         _tracked_entities[id] = true
         _tracked_count = _tracked_count + 1
+        -- Append to indexed array
+        local n = #_tracked_ids + 1
+        _tracked_ids[n] = id
+        _tracked_id_index[id] = n
     end
 end
 
@@ -45,6 +56,22 @@ local function untrack_entity(id)
     if _tracked_entities[id] then
         _tracked_entities[id] = nil
         _tracked_count = _tracked_count - 1
+        -- Swap-remove from indexed array (O(1))
+        local pos = _tracked_id_index[id]
+        if pos then
+            local last = #_tracked_ids
+            if pos ~= last then
+                local swap_id = _tracked_ids[last]
+                _tracked_ids[pos] = swap_id
+                _tracked_id_index[swap_id] = pos
+            end
+            _tracked_ids[last] = nil
+            _tracked_id_index[id] = nil
+            -- Keep cursor valid after removal
+            if _snapshot_cursor > #_tracked_ids then
+                _snapshot_cursor = 1
+            end
+        end
     end
 end
 
@@ -94,6 +121,9 @@ function unregister_callbacks()
 
     _tracked_entities = {}
     _tracked_count = 0
+    _tracked_ids = {}
+    _tracked_id_index = {}
+    _snapshot_cursor = 1
     _callbacks_registered = false
     printf("[GAMMA MP] Host callbacks unregistered")
 end
@@ -106,12 +136,18 @@ function build_entity_registry()
 
     _tracked_entities = {}
     _tracked_count = 0
+    _tracked_ids = {}
+    _tracked_id_index = {}
+    _snapshot_cursor = 1
 
     -- This is the one and only linear scan. After this, incremental updates only.
     for id = 0, 65534 do
         if sim:object(id) then
             _tracked_entities[id] = true
             _tracked_count = _tracked_count + 1
+            local n = #_tracked_ids + 1
+            _tracked_ids[n] = id
+            _tracked_id_index[id] = n
         end
     end
 
@@ -233,31 +269,50 @@ function send_snapshots()
     local sim = alife()
     if not sim then return end
 
-    -- Collect online entity positions using tracked registry (NOT linear scan)
+    -- Collect online entity positions using round-robin over indexed array (Bug #9 fix)
     local entities = {}
     local count = 0
+    local total = #_tracked_ids
 
-    for id, _ in pairs(_tracked_entities) do
-        local se_obj = sim:object(id)
-        if se_obj and se_obj:alive() then
-            local obj = level.object_by_id(id)
-            if obj then
-                local pos = obj:position()
-                if pos then
-                    count = count + 1
-                    entities[count] = {
-                        id = id,  -- host's native ID
-                        x = pos.x,
-                        y = pos.y,
-                        z = pos.z,
-                        h = obj:health() or 1.0,
-                    }
-                end
-            end
+    if total == 0 then
+        _snapshot_cursor = 1
+    else
+        -- Clamp cursor in case array shrunk
+        if _snapshot_cursor > total then
+            _snapshot_cursor = 1
         end
 
-        -- Cap per frame to avoid stalls
-        if count >= 100 then break end
+        local visited = 0
+        local idx = _snapshot_cursor
+
+        while count < 100 and visited < total do
+            local id = _tracked_ids[idx]
+            visited = visited + 1
+
+            local se_obj = sim:object(id)
+            if se_obj and se_obj:alive() then
+                local obj = level.object_by_id(id)
+                if obj then
+                    local pos = obj:position()
+                    if pos then
+                        count = count + 1
+                        entities[count] = {
+                            id = id,  -- host's native ID
+                            x = pos.x,
+                            y = pos.y,
+                            z = pos.z,
+                            h = obj:health() or 1.0,
+                        }
+                    end
+                end
+            end
+
+            idx = idx + 1
+            if idx > total then idx = 1 end
+        end
+
+        -- Advance cursor past what we visited for next frame
+        _snapshot_cursor = idx
     end
 
     if count > 0 then
