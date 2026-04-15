@@ -196,7 +196,7 @@ Used by `_g.script` wrappers and mod patches to guard MP-sensitive code paths.
 - Lua bindings use luabind: `module(L, "namespace") [ def("func", &func) ]`
 - Engine fork: themrdemonized/xray-monolith, branch `all-in-one-vs2022-wpo`
 - GNS default port: 44140 (UDP+TCP)
-- Snapshot rate: 20Hz (50ms), capped at 100 entities/frame
+- Snapshot rate: 20Hz (50ms), 100 entities/frame via round-robin cursor over indexed array
 - Protocol: text-based (`"MSG_TYPE|key=val|..."` for events, `"EP|id,x,y,z,h;..."` for positions)
 - `alife():create()` fires `server_entity_on_register` SYNCHRONOUSLY (confirmed via engine source)
 - `alife():release(se_obj, true)` — offline entities release synchronously, online entities async via GE_DESTROY
@@ -205,4 +205,7 @@ Used by `_g.script` wrappers and mod patches to guard MP-sensitive code paths.
 
 ## Phases
 
-- **Phase 0** (curr
+- **Phase 0** (current): Entity sync. Host A-Life → client mirrors. Alife guard blocks mod interference.
+- **Phase 1**: Render remote players. Position interpolation. Equipment sync.
+- **Phase 2**: Player interaction. Damage, items, crafting as host RPCs.
+- **Phase 3**: Dedicated headless server.
