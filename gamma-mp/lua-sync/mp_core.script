@@ -236,6 +236,56 @@ function on_client_key_press(key)
 end
 
 -- ============================================================================
+-- F10 Keybind — Cycle MP State
+-- ============================================================================
+
+--- F10: Cycle MP state
+---   Not initialized → Init + Host (starts everything)
+---   Hosting → Show status in HUD
+---   Client → Disconnect
+--- Double-tap F10 within 1 second → Full shutdown
+local _last_f10_time = 0
+
+function on_mp_key_press(key)
+    if key ~= DIK_keys.DIK_F10 then return end
+
+    local now = time_global()
+    local double_tap = (now - _last_f10_time) < 1000
+    _last_f10_time = now
+
+    if double_tap and is_mp_active() then
+        -- Double-tap F10: Full shutdown
+        mp_shutdown()
+        news_manager.send_tip(db.actor, "GAMMA MP shutdown", nil, nil, 3000)
+        return
+    end
+
+    if not _is_initialized then
+        -- First press: Init + Host
+        if mp_init() then
+            if mp_host() then
+                news_manager.send_tip(db.actor,
+                    "GAMMA MP hosting on port " .. _host_port,
+                    nil, nil, 5000)
+                mp_status()
+            end
+        end
+    elseif _is_host then
+        -- Show status
+        mp_status()
+        local clients = gns.get_client_count()
+        local tracked = mp_host_events.get_tracked_count()
+        news_manager.send_tip(db.actor,
+            "Hosting: " .. clients .. " clients, " .. tracked .. " entities",
+            nil, nil, 5000)
+    elseif _is_client then
+        -- Disconnect
+        mp_disconnect()
+        news_manager.send_tip(db.actor, "Disconnected from host", nil, nil, 3000)
+    end
+end
+
+-- ============================================================================
 -- Getters
 -- ============================================================================
 
@@ -406,6 +456,7 @@ end
 function on_game_start()
     RegisterScriptCallback("actor_on_update", mp_update)
     RegisterScriptCallback("on_console_execute", on_console_execute)
+    RegisterScriptCallback("on_key_press", on_mp_key_press)
 
     -- Expose global helpers so other scripts (and mod patches) can guard
     -- MP-sensitive code paths without importing mp_core directly.
