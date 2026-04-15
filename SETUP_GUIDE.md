@@ -58,6 +58,7 @@ The repo contains source code. The files that actually go into the game are:
 - `mp_protocol.script` — message serialization
 - `mp_host_events.script` — host-side event capture
 - `mp_client_state.script` — client-side state application
+- `mp_alife_guard.script` — blocks mod interference on client (metatable patch)
 - `mp_ui.script` — in-game multiplayer menu
 
 **UI layout** (goes in `C:\GAMMA\overwrite\gamedata\configs\ui\`):
@@ -229,6 +230,7 @@ Copy-Item "gamma-mp\lua-sync\mp_core.script" "$scripts\" -Force
 Copy-Item "gamma-mp\lua-sync\mp_protocol.script" "$scripts\" -Force
 Copy-Item "gamma-mp\lua-sync\mp_host_events.script" "$scripts\" -Force
 Copy-Item "gamma-mp\lua-sync\mp_client_state.script" "$scripts\" -Force
+Copy-Item "gamma-mp\lua-sync\mp_alife_guard.script" "$scripts\" -Force
 Copy-Item "gamma-mp\lua-sync\mp_ui.script" "$scripts\" -Force
 Copy-Item "gamma-mp\lua-sync\ui\ui_mp_menu.xml" "$ui\" -Force
 ```
@@ -338,7 +340,7 @@ For the curious. Skip this if you just want to play.
 
 2. **GNS bridge DLL** — Wraps Valve's GameNetworkingSockets for Lua. Exposes init, host, connect, poll, send_reliable, send_unreliable to the Lua scripting layer.
 
-3. **Lua sync layer** (5 .script files) — The actual multiplayer logic. Host captures events via engine callbacks, serializes them, broadcasts over GNS. Client receives, deserializes, and applies to local world.
+3. **Lua sync layer** (6 .script files) — The actual multiplayer logic. Host captures events via engine callbacks, serializes them, broadcasts over GNS. Client receives, deserializes, and applies to local world.
 
 ### Entity ID Mapping
 
