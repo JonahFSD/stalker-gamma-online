@@ -20,6 +20,7 @@ local _snapshot_interval_ms = 50  -- 20 Hz default
 
 -- Save blocking state
 local _original_save_funcs = {}
+local _original_exec_console_cmd = nil
 
 -- ============================================================================
 -- Initialization
@@ -152,8 +153,19 @@ end
 --- When the client calls alife():create(), the engine fires
 --- server_entity_on_register with the newly created se_obj.
 --- We forward this to mp_client_state to complete the ID mapping.
-function on_client_entity_registered(se_obj)
+---
+--- ZCP 1.4/1.5d and Warfare Patch fire SendScriptCallback("server_entity_on_register",
+--- self, source_tag) from their class overrides. The source_tag argument tells us these
+--- are infrastructure objects (squads, smart terrains) that should NOT pollute our
+--- ID mapping table on the client.
+function on_client_entity_registered(se_obj, source_tag)
     if _is_client and se_obj then
+        -- Filter ZCP/Warfare infrastructure objects — these are host-side only
+        if source_tag == "sim_squad_scripted"
+            or source_tag == "se_smart_terrain"
+            or source_tag == "sim_squad_warfare" then
+            return
+        end
         mp_client_state.on_local_entity_registered(se_obj)
     end
 end
@@ -166,13 +178,24 @@ end
 --- The client's world state is synthetic (created from network data).
 --- Saving it would create a corrupt save file.
 function block_client_saves()
-    -- Override the console command handlers for save operations.
-    -- Anomaly uses exec_console_cmd("save") internally.
-    -- We hook into the save-related script callbacks.
+    -- Hook the save-related script callbacks
     RegisterScriptCallback("on_before_save_input", block_save_attempt)
 
     -- Also hook the key binding for quicksave
     RegisterScriptCallback("on_key_press", on_client_key_press)
+
+    -- Intercept exec_console_cmd("save") — YACS and Sleep Balance bypass our
+    -- callback hook by calling this directly.
+    if not _original_exec_console_cmd then
+        _original_exec_console_cmd = exec_console_cmd
+        exec_console_cmd = function(cmd)
+            if _is_client and cmd and cmd:find("^save") then
+                printf("[GAMMA MP] Console save command blocked — client mode")
+                return
+            end
+            _original_exec_console_cmd(cmd)
+        end
+    end
 
     printf("[GAMMA MP] Client saves BLOCKED (prevents corruption)")
 end
@@ -180,13 +203,22 @@ end
 function restore_client_saves()
     UnregisterScriptCallback("on_before_save_input", block_save_attempt)
     UnregisterScriptCallback("on_key_press", on_client_key_press)
+
+    -- Restore original exec_console_cmd
+    if _original_exec_console_cmd then
+        exec_console_cmd = _original_exec_console_cmd
+        _original_exec_console_cmd = nil
+    end
+
     printf("[GAMMA MP] Client saves RESTORED")
 end
 
 function block_save_attempt(flags)
-    -- Anomaly's on_before_save_input passes a flags table with {ret_value = true}
-    -- Setting ret_value to false prevents the save
+    -- Anomaly's on_before_save_input passes a flags table.
+    -- GAMMA MCM dispatcher checks flags.ret; vanilla Anomaly checks flags.ret_value.
+    -- Set both to cover all paths.
     if _is_client and flags then
+        flags.ret = false
         flags.ret_value = false
         printf("[GAMMA MP] Save blocked — client mode active")
     end
@@ -290,5 +322,18 @@ end
 
 function on_game_start()
     RegisterScriptCallback("actor_on_update", mp_update)
+
+    -- Expose global helpers so other scripts (and mod patches) can guard
+    -- MP-sensitive code paths without importing mp_core directly.
+    _G.is_mp_client = function()
+        return _is_client
+    end
+    _G.is_mp_host = function()
+        return _is_host
+    end
+    _G.is_mp_active = function()
+        return _is_host or _is_client
+    end
+
     printf("[GAMMA MP] Core module loaded")
 end

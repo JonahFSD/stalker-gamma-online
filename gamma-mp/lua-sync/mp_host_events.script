@@ -122,9 +122,19 @@ end
 -- Entity Lifecycle Events -> Network
 -- ============================================================================
 
-function on_entity_register(se_obj)
+function on_entity_register(se_obj, source_tag)
     ensure_msg()
     if not se_obj then return end
+
+    -- ZCP/Warfare fire this callback from class overrides with a source_tag.
+    -- These are simulation infrastructure — track them but don't broadcast
+    -- spawn events for them (clients don't need squad/smart terrain objects).
+    if source_tag == "sim_squad_scripted"
+        or source_tag == "se_smart_terrain"
+        or source_tag == "sim_squad_warfare" then
+        track_entity(se_obj.id)
+        return
+    end
 
     -- Track locally
     track_entity(se_obj.id)
