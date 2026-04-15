@@ -1,0 +1,32 @@
+# Cloned dependencies (not our code)
+gamma-mp/AlifePlus/
+gamma-mp/GameNetworkingSockets/
+gamma-mp/Stalker_GAMMA/
+gamma-mp/xlibs/
+gamma-mp/xray-monolith/
+
+# Build artifacts
+gamma-mp/gns-bridge/build/
+_build/
+*.obj
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+
+# vcpkg
+vcpkg_installed/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temp audit script
+gamma-mp/audit_results/write_f6.py
