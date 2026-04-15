@@ -54,6 +54,11 @@ local _spawn_batch = 20       -- entities to create per frame (lower than cleanu
 -- Queued here, then flushed when the ID mapping is established in on_local_entity_registered.
 local _pending_positions = {} -- host_id -> { x, y, z, h }
 
+-- Guard flag: true while on_entity_death() is executing kill_entity().
+-- Prevents npc_on_death_callback from echoing back through host event handlers
+-- if they were ever accidentally registered on a client (Bug #7 defense-in-depth).
+local _applying_remote_death = false
+
 -- ============================================================================
 -- ID Mapping
 -- ============================================================================
@@ -228,22 +233,24 @@ function on_entity_death(data)
         return
     end
 
-    -- Try to kill with context for proper callback chain
+    -- Resolve killer se_obj once (if applicable)
+    local killer_se = nil
     if data.killer_id and data.killer_id >= 0 then
         local killer_local = resolve_id(data.killer_id)
         if killer_local then
-            local killer_se = sim:object(killer_local)
-            if killer_se then
-                sim:kill_entity(se_obj, killer_se)
-            else
-                sim:kill_entity(se_obj)
-            end
-        else
-            sim:kill_entity(se_obj)
+            killer_se = sim:object(killer_local)
         end
+    end
+
+    -- Set guard before kill_entity so that any npc_on_death_callback fired
+    -- synchronously by the engine cannot echo back as a broadcast (Bug #7).
+    _applying_remote_death = true
+    if killer_se then
+        sim:kill_entity(se_obj, killer_se)
     else
         sim:kill_entity(se_obj)
     end
+    _applying_remote_death = false
 
     -- Don't unmap yet — the entity might still exist as a corpse.
     -- Unmap when we get ENTITY_DESPAWN.
@@ -598,6 +605,12 @@ function get_id_map_count()
     local count = 0
     for _ in pairs(_host_to_local) do count = count + 1 end
     return count
+end
+
+--- Returns true while on_entity_death() is executing kill_entity().
+--- Used by mp_host_events to detect and suppress echo-back (Bug #7).
+function is_applying_remote_death()
+    return _applying_remote_death
 end
 
 --- Debug: dump the ID mapping table

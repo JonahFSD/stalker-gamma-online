@@ -46,11 +46,11 @@ Last updated: 2026-04-15
 **Problem:** Host on Level A sends entities with Level A vertex IDs. Client on Level B tries to teleport offline entities using stale `m_level_vertex_id`/`m_game_vertex_id` from Level A. `level.object_by_id()` only returns online entities on current level.
 **Fix:** In `apply_entity_position()` offline fallback, compare `game_graph():vertex(gvid):level_id()` against the actor's level ID before calling `teleport_object`. Return early if they differ. Falls through to original behavior if `game_graph()` or `db.actor` are unavailable.
 
-## Bug #7: Death Double-Fire (OPEN)
+## Bug #7: Death Double-Fire (FIXED)
 **Severity:** MEDIUM (theoretical)
 **File:** `lua-sync/mp_client_state.script` lines 189-231, `lua-sync/mp_host_events.script` lines 182-204
 **Problem:** When client calls `kill_entity()` to apply a host death event, it MIGHT re-fire `npc_on_death_callback` locally. If mp_host_events is registered on client (it shouldn't be), this could echo back.
-**Fix:** Not urgent — host callbacks only registered on host (`mp_host_events.register_callbacks()` only called from `mp_host()`). But add a guard flag (`_applying_remote_death`) as defense-in-depth.
+**Fix:** Added `_applying_remote_death` bool flag in `mp_client_state`. Set true immediately before `kill_entity()`, cleared after. Consolidated the 4-branch kill block into a single call site so the flag window is tight. `mp_host_events.on_npc_death()` checks `mp_client_state.is_applying_remote_death()` at entry and returns immediately if set. Host callbacks still only registered on host — this is defense-in-depth.
 
 ## Bug #8: kill_entity API Existence (OPEN)
 **Severity:** CRITICAL (if missing)

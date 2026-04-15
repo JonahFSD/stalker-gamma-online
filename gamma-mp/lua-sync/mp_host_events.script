@@ -218,6 +218,11 @@ end
 function on_npc_death(npc, killer)
     ensure_msg()
     if not npc then return end
+    -- Defense-in-depth: if kill_entity() was called by the client to apply a
+    -- remote death event, the engine may fire npc_on_death_callback synchronously.
+    -- Host callbacks should never be registered on a client, but guard here
+    -- anyway to prevent an echo loop if they somehow are (Bug #7).
+    if mp_client_state.is_applying_remote_death() then return end
     if gns.get_client_count() == 0 then return end
 
     local data = {
