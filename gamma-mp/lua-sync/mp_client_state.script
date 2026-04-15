@@ -49,6 +49,11 @@ local _spawn_queue = {}       -- array of spawn data tables
 local _spawn_queue_index = 0  -- current position during SYNCING
 local _spawn_batch = 20       -- entities to create per frame (lower than cleanup — create is heavier)
 
+-- Pending position updates for entities whose spawn message hasn't been processed yet.
+-- UDP position snapshots can arrive before the TCP spawn event (Bug #13).
+-- Queued here, then flushed when the ID mapping is established in on_local_entity_registered.
+local _pending_positions = {} -- host_id -> { x, y, z, h }
+
 -- ============================================================================
 -- ID Mapping
 -- ============================================================================
@@ -108,6 +113,13 @@ function on_local_entity_registered(se_obj)
         end
         map_id(host_id, se_obj.id)
         printf("[GAMMA MP] ID mapped: host %d -> local %d (%s)", host_id, se_obj.id, section)
+
+        -- Flush any position update that arrived via UDP before this spawn (Bug #13)
+        local pending_pos = _pending_positions[host_id]
+        if pending_pos then
+            apply_entity_position(host_id, pending_pos.x, pending_pos.y, pending_pos.z, pending_pos.h)
+            _pending_positions[host_id] = nil
+        end
     end
 end
 
@@ -275,7 +287,15 @@ function on_entity_positions(entities)
     if _sync_state == STATE_CLEANING then return end
 
     for _, e in ipairs(entities) do
-        apply_entity_position(e.id, e.x, e.y, e.z, e.h)
+        local local_id = resolve_id(e.id)
+        if local_id then
+            -- Entity mapped, apply immediately
+            apply_entity_position(e.id, e.x, e.y, e.z, e.h)
+        else
+            -- Entity not yet mapped — UDP position arrived before TCP spawn.
+            -- Queue for flush when on_local_entity_registered completes the mapping.
+            _pending_positions[e.id] = { x = e.x, y = e.y, z = e.z, h = e.h }
+        end
     end
 end
 
@@ -388,6 +408,7 @@ function on_full_state(data)
     _local_to_host = {}
     _network_entities = {}
     _pending_spawns = {}
+    _pending_positions = {}
     _spawn_queue = {}
     _spawn_queue_index = 0
 
