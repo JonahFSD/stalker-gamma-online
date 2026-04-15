@@ -203,9 +203,64 @@ Used by `_g.script` wrappers and mod patches to guard MP-sensitive code paths.
 - MO2 virtual filesystem: overwrite folder layers on top of all mods
 - GAMMA defaults to `AnomalyDX11AVX.exe` — our patched build is copied into this slot
 
-## Phases
+## Current State (Phase 0 — COMPLETE)
 
-- **Phase 0** (current): Entity sync. Host A-Life → client mirrors. Alife guard blocks mod interference.
-- **Phase 1**: Render remote players. Position interpolation. Equipment sync.
-- **Phase 2**: Player interaction. Damage, items, crafting as host RPCs.
-- **Phase 3**: Dedicated headless server.
+Working and deployed:
+- Entity sync (spawn/death/despawn/position) — host A-Life broadcasts to client
+- Weather and time sync (every 5s)
+- A-Life suppression on client via engine patch
+- Bidirectional entity ID mapping (host IDs ↔ client IDs)
+- Mod compatibility: metatable guard blocks 400+ mod conflicts, source tag filtering, _g.script wrappers
+- Save blocking on client (both F5 and console `save`)
+- Level transition handling (LEVEL_CHANGE message, client resets to IDLE)
+- F10 in-game menu (host/connect/disconnect/status/shutdown)
+- Full state streaming for new connections (50 entities/frame budget)
+- 20Hz position snapshots (100 entities/frame, round-robin)
+- Distribution repo: github.com/JonahFSD/gamma-mp-release (pre-built binaries + one-click installer)
+- Host networking: Windows firewall rules + AT&T BGW210-700 port forwarding on 44140 TCP/UDP
+
+## Full Co-Op Roadmap (everything short of dedicated server)
+
+### Phase 1: Player Visibility
+- Spawn puppet stalker entity for remote player
+- Position interpolation between 20Hz snapshots (smooth movement)
+- Correct outfit/armor visual display
+- Correct weapon in hands
+- Walk/run/crouch/idle/sprint animations matching actual movement
+- Head direction tracking
+- **Status: Phase 1 audit prompt written, not yet run**
+
+### Phase 2: Combat & Damage
+- Damage sync on NPCs/mutants (both players can shoot the same target)
+- Damage aggregation on host (host-authoritative hit registration)
+- Player health/radiation/bleeding sync
+- Friendly fire between players (configurable, default off)
+- Player death and respawn handling
+- Mutant/NPC attacks on remote player puppet → damage to actual client
+
+### Phase 3: Inventory & Economy
+- Loot sync — looting a body removes items for both players
+- Item drops visible to both players
+- Drop-and-grab item sharing between players
+- Artifact pickup sync from anomaly fields
+- Trader inventory (host-authoritative, NPCs live on host)
+- Money/economy sync
+- Shared stash access
+- Campfire cooking, weapon repair, crafting as host RPCs
+
+### Phase 4: World Integration
+- PDA map sync — see friend's position on map
+- Quest awareness (shared markers at minimum)
+- Independent level transitions (host in Rostok, client in Garbage)
+- Reconnection handling (client crash → rejoin → full state re-stream)
+- Client inventory/stats persistence between sessions (save client state separately)
+
+### Phase 5: Communication & Polish
+- Text chat through MP menu (new message type through GNS)
+- Proximity-based VOIP (Opus codec → unreliable GNS → OpenAL with distance scaling) — stretch goal
+- UI polish, status indicators, player nameplates
+
+### Phase FINAL: Dedicated Server (not in current scope)
+- Headless host, no renderer, `--dedicated` launch flag
+- Both players connect as clients
+- Same sync code, skip graphics init
