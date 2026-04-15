@@ -21,6 +21,7 @@ local MSG = {
     WEATHER_SYNC      = "WS",
     TIME_SYNC         = "TS",
     FULL_STATE        = "FS",  -- initial state dump for new client
+    LEVEL_CHANGE      = "LC",  -- host changed level; client must clear state and await new FULL_STATE
     PLAYER_EQUIP      = "PE",
 
     -- Snapshots (unreliable channel)
@@ -162,6 +163,9 @@ function dispatch_client(msg_type, data, conn_id)
 
     elseif msg_type == MSG.FULL_STATE then
         mp_client_state.on_full_state(data)
+
+    elseif msg_type == MSG.LEVEL_CHANGE then
+        mp_client_state.on_level_change(data)
 
     elseif msg_type == MSG.PLAYER_POS then
         mp_client_state.on_remote_player_pos(data, conn_id)

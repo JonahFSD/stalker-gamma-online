@@ -475,6 +475,40 @@ function on_full_state(data)
 end
 
 -- ============================================================================
+-- Level Change (host changed level)
+-- Clears all state and resets to IDLE so we can accept a new FULL_STATE.
+-- The host sends LEVEL_CHANGE before FULL_STATE, so this always arrives first
+-- on the reliable channel.
+-- ============================================================================
+
+function on_level_change(data)
+    printf("[GAMMA MP] Host changed level to '%s' — clearing all client state",
+        data.level or "?")
+
+    -- Wipe all entity state — the host world has changed completely
+    _host_to_local = {}
+    _local_to_host = {}
+    _network_entities = {}
+    _pending_spawns = {}
+    _pending_positions = {}
+
+    -- Abandon any in-progress sync cycle
+    _spawn_queue = {}
+    _spawn_queue_index = 0
+    _cleanup_ids = {}
+    _cleanup_index = 0
+
+    -- Back to IDLE — the incoming FULL_STATE will kick off CLEANING → SYNCING → ACTIVE
+    _sync_state = STATE_IDLE
+
+    if db.actor then
+        news_manager.send_tip(db.actor,
+            "Host changed level — resyncing world...",
+            nil, nil, 5000)
+    end
+end
+
+-- ============================================================================
 -- Sync State Machine (called from mp_core.mp_update via client_tick)
 -- ============================================================================
 

@@ -77,11 +77,11 @@ Last updated: 2026-04-15
 **Mitigation (partial):** `_g.script` wrapper with `is_mp_client()` guards blocks the most common paths. But mods that import alife() directly bypass this.
 **Full fix:** Intercept at the metatable level — wrap `alife()` return value with a proxy that blocks create/release on client. Requires careful engineering to not break mod introspection.
 
-## Bug #12: Level Transitions (OPEN)
+## Bug #12: Level Transitions (FIXED)
 **Severity:** CRITICAL
 **File:** `lua-sync/mp_core.script` — no handler exists
 **Problem:** When host changes level, client has no idea. Host's entity registry resets, new entities spawn on new level, but client still holds old mappings. Complete desync.
-**Fix:** Add `LEVEL_CHANGE` message type. Host broadcasts before transition. Client clears all state, resets to IDLE, waits for new `FULL_STATE` after host finishes loading.
+**Fix:** Added `LEVEL_CHANGE = "LC"` message type. Hook: `on_game_load` registered in `mp_host_events.register_callbacks()` (host only). Handler `on_host_level_load()` uses level-name comparison (`_last_level_name`) to distinguish real transitions from same-level reloads and the initial game load. On transition: broadcasts `LEVEL_CHANGE` (client resets to IDLE), then calls `send_full_state()` for each conn_id in `_connected_clients` (tracked in `send_full_state()`/`cancel_full_state()`). Client `on_level_change()` wipes all mapping tables, clears in-progress sync, resets `_sync_state = STATE_IDLE` to await new `FULL_STATE`. Message ordering on reliable channel guarantees LEVEL_CHANGE arrives before the FULL_STATE that follows it.
 
 ## Bug #13: Message Ordering Race (FIXED)
 **Severity:** CRITICAL

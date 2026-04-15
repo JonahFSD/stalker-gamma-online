@@ -32,6 +32,14 @@ local _last_env_sync = nil
 local _full_state_pending = {}
 local _full_state_batch = 50  -- ENTITY_SPAWN messages per frame per connection
 
+-- Connected client set — populated in send_full_state(), cleared in cancel_full_state().
+-- Used by on_host_level_load() to know who needs a new FULL_STATE after a level change.
+-- Distinct from _full_state_pending (which is only set while a stream is in progress).
+local _connected_clients = {}
+
+-- Level name at last on_game_load. nil = first load (no transition yet).
+local _last_level_name = nil
+
 -- ============================================================================
 -- Lazy init
 -- ============================================================================
@@ -94,6 +102,7 @@ function register_callbacks()
     -- Standard Anomaly callbacks
     RegisterScriptCallback("npc_on_death_callback", on_npc_death)
     RegisterScriptCallback("monster_on_death_callback", on_monster_death)
+    RegisterScriptCallback("on_game_load", on_host_level_load)
 
     -- AlifePlus xbus integration (if available)
     if xbus then
@@ -117,6 +126,7 @@ function unregister_callbacks()
     UnregisterScriptCallback("server_entity_on_unregister", on_entity_unregister)
     UnregisterScriptCallback("npc_on_death_callback", on_npc_death)
     UnregisterScriptCallback("monster_on_death_callback", on_monster_death)
+    UnregisterScriptCallback("on_game_load", on_host_level_load)
 
     if xbus then
         xbus.unsubscribe("cause:kill", "gamma_mp_host")
@@ -129,6 +139,9 @@ function unregister_callbacks()
     _tracked_ids = {}
     _tracked_id_index = {}
     _snapshot_cursor = 1
+    _connected_clients = {}
+    _full_state_pending = {}
+    _last_level_name = nil
     _callbacks_registered = false
     printf("[GAMMA MP] Host callbacks unregistered")
 end
@@ -369,6 +382,51 @@ function send_environment_sync()
 end
 
 -- ============================================================================
+-- Level Transition (host changed level)
+-- Registered as on_game_load — fires on every game load, including level
+-- transitions (which go through a save/load cycle in X-Ray).
+-- By the time this fires, server_entity_on_register has already updated
+-- _tracked_entities with the new level's entities.
+-- ============================================================================
+
+function on_host_level_load()
+    ensure_msg()
+
+    local current_level = level.name() or "unknown"
+
+    -- First call sets the baseline; don't broadcast on initial game load
+    -- (clients connect later, they get FULL_STATE normally on connect).
+    if _last_level_name == nil then
+        _last_level_name = current_level
+        return
+    end
+
+    -- Same level reload (e.g. load save on same map) — not a transition
+    if current_level == _last_level_name then return end
+
+    local prev_level = _last_level_name
+    _last_level_name = current_level
+
+    if gns.get_client_count() == 0 then return end
+
+    printf("[GAMMA MP] Host level transition: %s -> %s (%d clients)",
+        prev_level, current_level, gns.get_client_count())
+
+    -- Notify all clients to clear stale state.
+    -- Sent before FULL_STATE so clients process the reset first (reliable
+    -- channel guarantees ordering).
+    mp_protocol.broadcast_event(MSG.LEVEL_CHANGE, {
+        level = current_level,
+    })
+
+    -- Stream the new level's full entity state to every connected client.
+    -- send_full_state() snapshots _tracked_ids which is already current.
+    for conn_id in pairs(_connected_clients) do
+        send_full_state(conn_id)
+    end
+end
+
+-- ============================================================================
 -- Full State Dump (for new client connections)
 -- Streamed over multiple frames: _full_state_batch entities per frame.
 -- send_full_state() sends the header and queues the work.
@@ -440,6 +498,9 @@ function send_full_state(conn_id)
     printf("[GAMMA MP] Starting full state stream to client %d (%d entities)",
         conn_id, _tracked_count)
 
+    -- Track as a connected client so on_host_level_load() can reach them
+    _connected_clients[conn_id] = true
+
     -- Header: triggers CLEANING state on the client
     mp_protocol.send_event(conn_id, MSG.FULL_STATE, {
         entity_count = _tracked_count,
@@ -477,6 +538,7 @@ function cancel_full_state(conn_id)
         _full_state_pending[conn_id] = nil
         printf("[GAMMA MP] Full state stream cancelled for client %d", conn_id)
     end
+    _connected_clients[conn_id] = nil
 end
 
 -- ============================================================================
