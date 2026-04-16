@@ -507,4 +507,100 @@ describe("host_events: host PLAYER_POS extended fields", function()
     end)
 end)
 
+-- ============================================================================
+-- Client PLAYER_POS relay
+-- ============================================================================
+
+describe("host_events: client PLAYER_POS relay", function()
+    -- Helper: build a PP data table as dispatch_host would pass to on_client_player_pos
+    local function make_pp_data(actor_id, x, y, z, h, bs, mt)
+        return {
+            entities = {{
+                id  = actor_id,
+                x   = x   or 10.0,
+                y   = y   or  5.0,
+                z   = z   or 20.0,
+                h   = h   or  1.57,
+                bs  = bs  or 1,
+                mt  = mt  or 2,
+                seq = 1,
+            }}
+        }
+    end
+
+    -- Helper: find an unreliable PP send to a specific conn_id
+    local function get_pp_to(target_conn_id)
+        for _, m in ipairs(gns._get_sent_unreliable()) do
+            if m.conn_id == target_conn_id and m.payload and m.payload:find("^PP|") then
+                return m.payload
+            end
+        end
+        return nil
+    end
+
+    before_each(function()
+        reset_all_state()
+        gns._set_client_count(2)
+        set_verbose(false)
+        mp_host_events.register_callbacks()
+        -- Register clients via send_full_state so _connected_clients is populated
+        mp_host_events.send_full_state(1)
+        mp_host_events.send_full_state(2)
+        mp_protocol.reset_pp_seq()
+        set_verbose(true)
+        gns._clear_sent()
+    end)
+
+    it("client PP is relayed to other clients (not sender)", function()
+        mp_host_events.on_client_player_pos(1, make_pp_data(100, 10, 5, 20, 1.57, 1, 2))
+
+        -- Must send PP to client 2
+        assert_not_nil(get_pp_to(2), "should relay PP to client 2")
+        -- Must NOT send PP back to sender (client 1)
+        assert_nil(get_pp_to(1), "should NOT relay PP back to client 1 (sender)")
+    end)
+
+    it("client PP is not relayed when only one client connected", function()
+        -- Re-init with a single client
+        reset_all_state()
+        gns._set_client_count(1)
+        set_verbose(false)
+        mp_host_events.register_callbacks()
+        mp_host_events.send_full_state(1)
+        mp_protocol.reset_pp_seq()
+        set_verbose(true)
+        gns._clear_sent()
+
+        mp_host_events.on_client_player_pos(1, make_pp_data(100, 10, 5, 20, 1.57, 1, 2))
+
+        local sent = gns._get_sent_unreliable()
+        assert_eq(0, #sent, "no relay send expected with only one client")
+    end)
+
+    it("client PP position is still stored after relay", function()
+        local pp = make_pp_data(100, 33.5, 7.0, 44.2, 0.8, 0, 1)
+        mp_host_events.on_client_player_pos(1, pp)
+
+        local state = mp_host_events.get_client_state(1)
+        assert_not_nil(state, "_clients[1] should exist after PP")
+        assert_not_nil(state.position, "_clients[1].position should be set")
+        assert_eq(state.position, pp)
+    end)
+
+    it("relayed PP identifies the sender via conn_id as id field", function()
+        mp_host_events.on_client_player_pos(1, make_pp_data(100, 10, 5, 20, 1.57, 1, 2))
+
+        local payload = get_pp_to(2)
+        assert_not_nil(payload, "relay PP to client 2 not found")
+
+        -- PP wire format: "PP|id,x,y,z,h,bs,mt,seq"
+        -- The 'id' field must be the sender's conn_id (1), not the client actor id (100)
+        local entry = payload:match("^PP|([^;]+)")
+        assert_not_nil(entry, "could not parse PP entry from payload")
+        local id_str = entry:match("^([^,]+)")
+        assert_eq(1, tonumber(id_str),
+            "relayed PP id should be sender conn_id=1, got " .. tostring(id_str))
+    end)
+end)
+
 summary()

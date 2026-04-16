@@ -552,7 +552,33 @@ end
 function on_client_player_pos(conn_id, data)
     _clients[conn_id] = _clients[conn_id] or {}
     _clients[conn_id].position = data
-    -- TODO: Phase 2 - broadcast to other clients, render remote player actor
+
+    -- Relay to all other connected clients so they can update this player's puppet.
+    -- The relayed PP uses conn_id as the 'id' field so the receiver can identify
+    -- which remote player the position belongs to.
+    local entries = data and data.entities or {}
+    if #entries == 0 then return end
+
+    -- Build relay entries once (conn_id replaces the actor id as puppet identifier)
+    local relay_entries = {}
+    for i, e in ipairs(entries) do
+        relay_entries[i] = {
+            id = conn_id,
+            x  = e.x,
+            y  = e.y,
+            z  = e.z,
+            h  = e.h or 0,
+            bs = e.bs or 0,
+            mt = e.mt or 0,
+        }
+    end
+
+    ensure_msg()
+    for other_id in pairs(_connected_clients) do
+        if other_id ~= conn_id then
+            mp_protocol.send_snapshot(other_id, MSG.PLAYER_POS, relay_entries)
+        end
+    end
 end
 
 function on_client_player_equip(conn_id, data)
@@ -567,4 +593,8 @@ end
 
 function get_tracked_count()
     return _tracked_count
+end
+
+function get_client_state(conn_id)
+    return _clients[conn_id]
 end
