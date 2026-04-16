@@ -52,11 +52,11 @@ Last updated: 2026-04-15
 **Problem:** When client calls `kill_entity()` to apply a host death event, it MIGHT re-fire `npc_on_death_callback` locally. If mp_host_events is registered on client (it shouldn't be), this could echo back.
 **Fix:** Added `_applying_remote_death` bool flag in `mp_client_state`. Set true immediately before `kill_entity()`, cleared after. Consolidated the 4-branch kill block into a single call site so the flag window is tight. `mp_host_events.on_npc_death()` checks `mp_client_state.is_applying_remote_death()` at entry and returns immediately if set. Host callbacks still only registered on host — this is defense-in-depth.
 
-## Bug #8: kill_entity API Existence (OPEN)
-**Severity:** CRITICAL (if missing)
+## Bug #8: kill_entity API Existence (RESOLVED — EXISTS)
+**Severity:** N/A
 **File:** `lua-sync/mp_client_state.script` lines 220-227
-**Problem:** Code calls `sim:kill_entity(se_obj, killer_se)`. If this API doesn't exist in the engine build, it silently errors or crashes.
-**Fix:** Test in-game: `lua: alife():kill_entity`. Add safe wrapper with fallback to `sim:release(se_obj, true)`.
+**Problem:** Code calls `sim:kill_entity(se_obj, killer_se)`. Concern that API might not exist.
+**Finding:** Confirmed via engine source. Three overloads registered in `alife_simulator_script.cpp` line 611-613. Implementation in `alife_combat_manager.cpp` lines 459-477. Removes entity from simulation, detaches children, updates position. Fully exposed to Lua as `alife():kill_entity(monster)`, `alife():kill_entity(monster, gvid)`, and full signature.
 
 ## Bug #9: Position Snapshot Cap (FIXED)
 **Severity:** HIGH
@@ -64,11 +64,11 @@ Last updated: 2026-04-15
 **Problem:** `send_snapshots()` caps at 100 entities per frame via `for id, _ in pairs()` + `break`. With 2000+ tracked entities, `pairs()` iteration order is non-deterministic (Lua hash table), so the SAME 100 entities could be sent every frame while others never update.
 **Fix:** Added `_tracked_ids` indexed array (maintained via O(1) swap-remove in `track_entity`/`untrack_entity`) and `_snapshot_cursor` that advances each frame. `send_snapshots()` now walks the array starting at the cursor, wrapping around, ensuring all entities get position updates across frames. With 2000 entities at 100/frame, full rotation takes 20 frames (1 second at 20Hz).
 
-## Bug #10: force_set_position API Existence (OPEN)
-**Severity:** CRITICAL (if missing)
+## Bug #10: force_set_position API Existence (RESOLVED — EXISTS, BETTER OPTION AVAILABLE)
+**Severity:** N/A
 **File:** `lua-sync/mp_client_state.script` line 284
-**Problem:** Code calls `obj:force_set_position(target_pos)`. If this game_object method doesn't exist, online entities never move.
-**Fix:** Test in-game: `lua: db.actor.force_set_position`. Add safe wrapper with fallback to `obj:set_position()` or `obj:set_movement_position()`.
+**Problem:** Code calls `obj:force_set_position(target_pos)`. Concern that API might not exist.
+**Finding:** Confirmed via engine source. `force_set_position` registered in `script_game_object_script3.cpp` line 477 (behind GAME_OBJECT_EXTENDED_EXPORTS). Sets XFORM().c + updates physics shell. HOWEVER, `set_npc_position(pos)` (registered in `script_game_object_script2.cpp` line 346, ALWAYS available) is better for NPCs — it invalidates detail movement path, destroys animation movement control, and calls ForceTransform. For puppets we're manually driving, set_npc_position is the correct API. Consider switching puppet position updates to use set_npc_position instead.
 
 ## Bug #11: Direct alife() Calls from Mods (FIXED)
 **Severity:** CRITICAL
