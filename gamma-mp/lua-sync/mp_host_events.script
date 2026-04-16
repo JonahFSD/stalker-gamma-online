@@ -345,13 +345,17 @@ function send_snapshots()
     -- Send host player position to all clients
     if actor then
         local pos = actor:position()
+        local dir = actor:direction()
+        local heading = math.atan2(dir.x, dir.z)
         mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
             {
                 id = actor:id(),
-                x = pos.x,
-                y = pos.y,
-                z = pos.z,
-                h = actor:health(),
+                x  = pos.x,
+                y  = pos.y,
+                z  = pos.z,
+                h  = heading,
+                bs = actor:body_state(),
+                mt = actor:movement_type(),
             }
         })
     end

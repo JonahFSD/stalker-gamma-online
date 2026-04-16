@@ -444,4 +444,67 @@ describe("host_events: full state streaming", function()
     end)
 end)
 
+-- ============================================================================
+-- Host PLAYER_POS snapshot — extended fields
+-- ============================================================================
+
+describe("host_events: host PLAYER_POS extended fields", function()
+    -- Helper: find the PP unreliable payload and parse the first entry's fields.
+    -- PP wire format: "PP|id,x,y,z,h,bs,mt,seq;..."
+    -- Returns array of numbers [id, x, y, z, heading, bs, mt, seq] or nil.
+    local function get_pp_fields()
+        for _, m in ipairs(gns._get_sent_unreliable()) do
+            if m.payload and m.payload:find("^PP|") then
+                local entry = m.payload:match("^PP|([^;]+)")
+                if entry then
+                    local vals = {}
+                    for v in entry:gmatch("[^,]+") do
+                        vals[#vals + 1] = tonumber(v)
+                    end
+                    return vals  -- [1]=id [2]=x [3]=y [4]=z [5]=heading [6]=bs [7]=mt [8]=seq
+                end
+            end
+        end
+        return nil
+    end
+
+    before_each(function()
+        reset_all_state()
+        gns._set_client_count(1)
+        set_verbose(false)
+        mp_host_events.register_callbacks()
+        mp_protocol.reset_pp_seq()
+        set_verbose(true)
+        gns._clear_sent()
+    end)
+
+    it("host PP includes heading derived from actor:direction()", function()
+        local actor = set_mock_actor(0, {x=0, y=0, z=0})
+        -- direction (1,0,0) → heading = math.atan2(1,0) = π/2
+        actor:set_direction(vector():set(1, 0, 0))
+
+        mp_host_events.send_snapshots()
+
+        local vals = get_pp_fields()
+        assert_not_nil(vals, "PP message not found")
+        assert_not_nil(vals[5], "heading field missing")
+        local expected = math.atan2(1, 0)
+        assert_true(math.abs(vals[5] - expected) < 0.001,
+            string.format("heading: expected ~%.4f, got %.4f", expected, vals[5]))
+    end)
+
+    it("host PP includes body_state and movement_type", function()
+        local actor = set_mock_actor(0, {x=0, y=0, z=0})
+        actor:set_body_state(1)     -- stand
+        actor:set_movement_type(2)  -- standing
+
+        mp_host_events.send_snapshots()
+
+        local vals = get_pp_fields()
+        assert_not_nil(vals, "PP message not found")
+        assert_eq(1, vals[6], "body_state field")
+        assert_eq(2, vals[7], "movement_type field")
+    end)
+end)
+
 summary()

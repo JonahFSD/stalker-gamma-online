@@ -107,6 +107,7 @@ local function make_game_object(se_obj)
         _body_state = 1,
         _move_type  = 1,
         _heading    = 0,
+        _direction  = vector():set(0, 0, 1),
         _last_anim  = nil,
         _gvid       = se_obj.m_game_vertex_id,
     }
@@ -124,6 +125,8 @@ local function make_game_object(se_obj)
     function go:set_npc_position(v)   self:force_set_position(v) end
     function go:body_state()          return self._body_state end
     function go:movement_type()       return self._move_type end
+    function go:direction()            return self._direction end
+    function go:set_direction(v)       self._direction = vector():set(v.x, v.y, v.z) end
     function go:set_body_yaw(h)       self._heading = h end
     function go:set_body_state(bs)    self._body_state = bs end
     function go:set_movement_type(mt) self._move_type = mt end
