@@ -464,7 +464,11 @@ function on_full_state(data)
     printf("[GAMMA MP] Cleanup: %d pre-existing entities to remove (player excluded)", count)
 
     if count == 0 then
-        -- Nothing to clean, go straight to syncing
+        -- Nothing to clean, go straight to syncing.
+        -- Set _spawn_queue_index = 1 to match the value tick_cleanup would have set.
+        -- Without this, tick_sync's while-loop (0 <= 0) fires once on an empty queue
+        -- and calls do_entity_spawn(nil), erroring on data.id (Lua arrays are 1-indexed).
+        _spawn_queue_index = 1
         _sync_state = STATE_SYNCING
         printf("[GAMMA MP] No cleanup needed, entering SYNCING state")
     else

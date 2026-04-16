@@ -245,6 +245,45 @@ describe("client_state: sync state machine", function()
         assert_eq("active", mp_client_state.get_sync_state_name())
         assert_not_nil(mp_client_state.resolve_id(9001), "queued spawn should now be mapped")
     end)
+
+    it("spawn queue processes correctly when CLEANING skipped (zero-index fix)", function()
+        -- Bug: on_full_state with zero pre-existing entities skips CLEANING and
+        -- transitions to SYNCING with _spawn_queue_index still 0. tick_sync's
+        -- while-loop condition (0 <= #queue) is true even on an empty queue, so
+        -- it calls do_entity_spawn(_spawn_queue[0]) = do_entity_spawn(nil), which
+        -- errors on data.id. Fix: set _spawn_queue_index = 1 before entering SYNCING.
+        RegisterScriptCallback("server_entity_on_register", mp_client_state.on_local_entity_registered)
+
+        -- Fresh client: no pre-existing entities → on_full_state skips CLEANING → SYNCING
+        set_verbose(false)
+        mp_client_state.on_full_state({ entity_count = 3 })
+        set_verbose(true)
+        assert_eq("syncing", mp_client_state.get_sync_state_name())
+
+        -- Spawn messages arrive from host while in SYNCING → immediate path, not queued
+        mp_client_state.on_entity_spawn({ id=9001, section="stalker_bandit", pos_x=10,pos_y=0,pos_z=10, lvid=0,gvid=0 })
+        mp_client_state.on_entity_spawn({ id=9002, section="stalker_bandit", pos_x=20,pos_y=0,pos_z=20, lvid=0,gvid=0 })
+        mp_client_state.on_entity_spawn({ id=9003, section="stalker_bandit", pos_x=30,pos_y=0,pos_z=30, lvid=0,gvid=0 })
+
+        -- All 3 spawned immediately (SYNCING processes spawns directly, not via queue)
+        assert_not_nil(mp_client_state.resolve_id(9001), "entity 9001 should be spawned in SYNCING state")
+        assert_not_nil(mp_client_state.resolve_id(9002), "entity 9002 should be spawned in SYNCING state")
+        assert_not_nil(mp_client_state.resolve_id(9003), "entity 9003 should be spawned in SYNCING state")
+
+        -- client_tick drives tick_sync against the (now empty) spawn queue.
+        -- Without fix: _spawn_queue_index=0 → (0<=0)=true → do_entity_spawn(nil) → ERROR
+        -- With fix:    _spawn_queue_index=1 → (1<=0)=false → clean transition to ACTIVE
+        set_verbose(false)
+        mp_client_state.client_tick()
+        set_verbose(true)
+
+        UnregisterScriptCallback("server_entity_on_register", mp_client_state.on_local_entity_registered)
+        assert_eq("active", mp_client_state.get_sync_state_name())
+        -- All 3 entities remain mapped after the tick (none lost to the nil-index bug)
+        assert_not_nil(mp_client_state.resolve_id(9001), "entity 9001 still mapped after tick")
+        assert_not_nil(mp_client_state.resolve_id(9002), "entity 9002 still mapped after tick")
+        assert_not_nil(mp_client_state.resolve_id(9003), "entity 9003 still mapped after tick")
+    end)
 end)
 
 -- ============================================================================
