@@ -26,6 +26,19 @@ foreach ($s in $scripts) {
     Write-Host "  [OK] $s" -ForegroundColor Green
 }
 
+# Mod patches (minimal edits to GAMMA mod files — stored in mod-patches/)
+$patches = @("surge_rush_scheme_common.script")
+foreach ($p in $patches) {
+    $src = "$repoRoot\gamma-mp\mod-patches\$p"
+    $dst = "$gammaScripts\$p"
+    if (!(Test-Path $src)) {
+        Write-Host "  [SKIP] $p (not found in source)" -ForegroundColor Yellow
+        continue
+    }
+    Copy-Item $src $dst -Force
+    Write-Host "  [OK] $p (mod patch)" -ForegroundColor Green
+}
+
 # UI XML
 $xmlSrc = "$repoRoot\gamma-mp\lua-sync\ui\ui_mp_menu.xml"
 $xmlDst = "$gammaUI\ui_mp_menu.xml"
