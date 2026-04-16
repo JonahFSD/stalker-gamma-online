@@ -11,6 +11,7 @@ local _SCRIPTS = {
     "mp_core",
     "mp_host_events",
     "mp_protocol",
+    "mp_puppet",
     -- mp_ui intentionally excluded
 }
 
@@ -66,7 +67,7 @@ function load_script(name)
     return mod
 end
 
--- Load all 5 testable scripts in dependency order
+-- Load all testable scripts in dependency order
 function load_all()
     for _, name in ipairs(_SCRIPTS) do
         if not _loaded[name] then

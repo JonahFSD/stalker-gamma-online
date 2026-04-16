@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $gammaScripts -Force | Out-Null
 New-Item -ItemType Directory -Path $gammaUI -Force | Out-Null
 
 # Lua scripts
-$scripts = @("mp_core.script", "mp_protocol.script", "mp_host_events.script", "mp_client_state.script", "mp_alife_guard.script", "mp_ui.script")
+$scripts = @("mp_core.script", "mp_protocol.script", "mp_host_events.script", "mp_client_state.script", "mp_alife_guard.script", "mp_puppet.script", "mp_ui.script")
 foreach ($s in $scripts) {
     $src = "$repoRoot\gamma-mp\lua-sync\$s"
     $dst = "$gammaScripts\$s"

@@ -1,0 +1,224 @@
+--- mp_puppet.script: Puppet NPC lifecycle for remote player visibility
+--- Manages spawn/despawn/update of stalker NPCs representing remote players.
+---
+--- Each remote player gets one NPC ("puppet") spawned at their reported position.
+--- The puppet uses the npcx_is_companion infoportion to fence off ~50 GAMMA mods
+--- (surge manager, companion system, etc.) that would otherwise interfere.
+---
+--- WIRING: This module exposes an API only. Dispatch wiring into mp_protocol
+--- and mp_client_state happens in C9 (integration commit).
+
+local PUPPET_SECTION = "stalker_sim_default_military_0"
+
+-- Primary tracking table: conn_id -> puppet record
+-- Record fields: se_id, last_pos, last_h, last_bs, last_mt, needs_infoportion
+local _puppets = {}
+
+-- Fast reverse lookup: se_id -> true
+-- Used by is_puppet() and get_puppet_ids() to filter puppets from EP broadcasts.
+local _puppet_se_ids = {}
+
+-- Pending infoportion application: se_id -> true
+-- When a puppet NPC is offline at spawn time, give_info_portion must be deferred
+-- to the first update_puppet() call when level.object_by_id() returns non-nil.
+local _pending_infoportion = {}
+
+-- ============================================================================
+-- Private helpers
+-- ============================================================================
+
+--- Apply the npcx_is_companion infoportion to a server entity if the method
+--- is available. Safe to call in test environments where the stub is absent.
+local function try_give_infoportion(se_obj)
+    if se_obj and type(se_obj.give_info_portion) == "function" then
+        se_obj:give_info_portion("npcx_is_companion")
+    end
+end
+
+-- ============================================================================
+-- Public API
+-- ============================================================================
+
+--- Spawn a puppet NPC for a remote player.
+--- Uses mp_alife_guard.internal_create to bypass the client-side alife guard.
+---
+--- @param conn_id  number  Connection ID of the remote player
+--- @param pos      vector  World position to spawn at
+function spawn_puppet(conn_id, pos)
+    if _puppets[conn_id] then
+        printf("[GAMMA MP PUPPET] Already have puppet for conn %d, skipping spawn", conn_id)
+        return
+    end
+
+    local sim = alife()
+    if not sim then
+        printf("[GAMMA MP PUPPET] ERROR: alife() not available for conn %d puppet spawn", conn_id)
+        return
+    end
+
+    -- Use level.vertex_id for lvid; assume same level as actor for gvid.
+    local lvid = level.vertex_id(pos)
+    local gvid = db.actor and db.actor:game_vertex_id() or 0
+
+    -- internal_create bypasses the mod guard and returns the se_obj directly.
+    -- The engine fires server_entity_on_register synchronously, so se_obj.id is
+    -- valid immediately on return.
+    local se_obj = mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
+    if not se_obj then
+        printf("[GAMMA MP PUPPET] ERROR: internal_create returned nil for conn %d", conn_id)
+        return
+    end
+
+    local se_id = se_obj.id
+
+    _puppets[conn_id] = {
+        se_id              = se_id,
+        last_pos           = pos,
+        last_h             = 0,
+        last_bs            = 1,
+        last_mt            = 1,
+        needs_infoportion  = false,
+    }
+    _puppet_se_ids[se_id] = true
+
+    -- Give infoportion now if the entity is already online; otherwise defer.
+    local go = level.object_by_id(se_id)
+    if go then
+        try_give_infoportion(se_obj)
+    else
+        _pending_infoportion[se_id] = true
+        _puppets[conn_id].needs_infoportion = true
+    end
+
+    printf("[GAMMA MP PUPPET] Spawned puppet for conn %d at (%.1f, %.1f, %.1f) se_id=%d",
+        conn_id, pos.x, pos.y, pos.z, se_id)
+end
+
+--- Remove the puppet for a disconnected player.
+--- Calls internal_release so the despawn bypasses the client-side guard.
+---
+--- @param conn_id  number  Connection ID of the remote player
+function despawn_puppet(conn_id)
+    local puppet = _puppets[conn_id]
+    if not puppet then return end
+
+    local se_id = puppet.se_id
+    local sim = alife()
+    if sim then
+        local se_obj = sim:object(se_id)
+        if se_obj then
+            mp_alife_guard.internal_release(sim, se_obj, true)
+        end
+    end
+
+    _puppet_se_ids[se_id] = nil
+    _pending_infoportion[se_id] = nil
+    _puppets[conn_id] = nil
+
+    printf("[GAMMA MP PUPPET] Despawned puppet for conn %d (se_id=%d)", conn_id, se_id)
+end
+
+--- Apply position/heading/animation state from a PP message to the puppet NPC.
+--- If the entity is offline (level.object_by_id returns nil), the data is cached
+--- in the puppet record so the next call when the entity is online picks it up.
+---
+--- @param conn_id  number  Connection ID of the remote player
+--- @param data     table   Fields: pos (vector), h (number), bs (number), mt (number)
+function update_puppet(conn_id, data)
+    local puppet = _puppets[conn_id]
+    if not puppet then return end
+
+    local se_id = puppet.se_id
+    local go = level.object_by_id(se_id)
+
+    if not go then
+        -- Entity is offline — cache state for when it comes online.
+        if data.pos then puppet.last_pos = data.pos end
+        if data.h   ~= nil then puppet.last_h  = data.h  end
+        if data.bs  ~= nil then puppet.last_bs = data.bs end
+        if data.mt  ~= nil then puppet.last_mt = data.mt end
+        return
+    end
+
+    -- Flush deferred infoportion if not yet applied.
+    if puppet.needs_infoportion or _pending_infoportion[se_id] then
+        local sim = alife()
+        if sim then
+            local se_obj = sim:object(se_id)
+            try_give_infoportion(se_obj)
+        end
+        puppet.needs_infoportion = false
+        _pending_infoportion[se_id] = nil
+    end
+
+    -- Apply movement state.
+    if data.pos then
+        go:set_npc_position(data.pos)
+        puppet.last_pos = data.pos
+    end
+
+    if data.h ~= nil then
+        go:set_body_yaw(data.h)
+        puppet.last_h = data.h
+    end
+
+    if data.bs ~= nil then
+        go:set_body_state(data.bs)
+        puppet.last_bs = data.bs
+    end
+
+    if data.mt ~= nil then
+        go:set_movement_type(data.mt)
+        puppet.last_mt = data.mt
+    end
+
+    -- Puppets never relax — force danger mental state every update.
+    go:set_mental_state(0)
+end
+
+--- Despawn every active puppet. Call on client disconnect.
+function despawn_all()
+    local conn_ids = {}
+    for conn_id in pairs(_puppets) do
+        conn_ids[#conn_ids + 1] = conn_id
+    end
+    for _, conn_id in ipairs(conn_ids) do
+        despawn_puppet(conn_id)
+    end
+    printf("[GAMMA MP PUPPET] despawn_all complete")
+end
+
+--- Returns true if se_id belongs to a puppet NPC.
+--- Used by the host to filter puppets from EP broadcasts.
+---
+--- @param  se_id  number
+--- @return boolean
+function is_puppet(se_id)
+    return _puppet_se_ids[se_id] == true
+end
+
+--- Returns the raw se_id lookup table { [se_id] = true }.
+--- For host-side filtering without iterating _puppets.
+---
+--- @return table
+function get_puppet_ids()
+    return _puppet_se_ids
+end
+
+--- Returns the number of currently active puppets.
+---
+--- @return number
+function get_puppet_count()
+    local count = 0
+    for _ in pairs(_puppets) do count = count + 1 end
+    return count
+end
+
+--- Clear all puppet state. Call on disconnect to wipe any lingering records.
+--- Does NOT despawn entities — call despawn_all() first if entities are alive.
+function reset()
+    _puppets = {}
+    _puppet_se_ids = {}
+    _pending_infoportion = {}
+    printf("[GAMMA MP PUPPET] State reset")
+end

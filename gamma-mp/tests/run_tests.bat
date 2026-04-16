@@ -9,7 +9,7 @@ echo.
 set PASS=0
 set FAIL=0
 
-for %%F in (test_sanity.lua test_loader.lua test_protocol.lua test_alife_guard.lua test_host_events.lua test_client_state.lua test_integration.lua) do (
+for %%F in (test_sanity.lua test_loader.lua test_protocol.lua test_alife_guard.lua test_host_events.lua test_client_state.lua test_puppet.lua test_integration.lua) do (
     if exist %%F (
         echo --- Running %%F ---
         "%LUA%" %%F
