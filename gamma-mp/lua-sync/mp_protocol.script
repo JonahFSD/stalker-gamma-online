@@ -40,6 +40,10 @@ local MSG = {
 --
 -- Phase 2: replace with MessagePack for 5-10x size reduction
 
+-- Per-sender sequence counter for PLAYER_POS messages (uint16, wraps at 65535).
+-- Auto-incremented each time serialize_player_pos() is called.
+local _pp_seq = 0
+
 local function serialize_event(msg_type, data)
     local parts = { msg_type }
     for k, v in pairs(data) do
@@ -63,6 +67,22 @@ local function serialize_positions(msg_type, entities)
     return msg_type .. "|" .. table.concat(entries, ";")
 end
 
+local function serialize_player_pos(entities)
+    -- Extended PP format: "PP|id,x,y,z,h,bs,mt,seq;..."
+    --   h   = heading in radians (4 decimal places)
+    --   bs  = body_state  (0=crouch, 1=stand)
+    --   mt  = movement_type (0=walk, 1=run, 2=stand)
+    --   seq = uint16 sequence number, auto-incremented per call
+    local entries = {}
+    for _, e in ipairs(entities) do
+        _pp_seq = (_pp_seq + 1) % 65536
+        entries[#entries + 1] = string.format("%d,%.2f,%.2f,%.2f,%.4f,%d,%d,%d",
+            e.id, e.x, e.y, e.z,
+            e.h or 0, e.bs or 0, e.mt or 0, _pp_seq)
+    end
+    return "PP|" .. table.concat(entries, ";")
+end
+
 -- Deserialize a message string back into type + data
 local function deserialize(str)
     local parts = {}
@@ -76,7 +96,7 @@ local function deserialize(str)
     local data = {}
 
     -- Check if it's a position batch (entries separated by semicolons)
-    if msg_type == MSG.ENTITY_POS or msg_type == MSG.PLAYER_POS then
+    if msg_type == MSG.ENTITY_POS then
         if #parts >= 2 then
             local entries = {}
             for entry in parts[2]:gmatch("[^;]+") do
@@ -87,10 +107,35 @@ local function deserialize(str)
                 if #values >= 4 then
                     entries[#entries + 1] = {
                         id = values[1],
-                        x = values[2],
-                        y = values[3],
-                        z = values[4],
-                        h = values[5] or 1.0,
+                        x  = values[2],
+                        y  = values[3],
+                        z  = values[4],
+                        h  = values[5] or 1.0,
+                    }
+                end
+            end
+            data.entities = entries
+        end
+    elseif msg_type == MSG.PLAYER_POS then
+        -- Extended PP format: id,x,y,z,h,bs,mt,seq
+        -- Fields 6-8 (bs, mt, seq) are optional for backward compatibility with old senders.
+        if #parts >= 2 then
+            local entries = {}
+            for entry in parts[2]:gmatch("[^;]+") do
+                local values = {}
+                for v in entry:gmatch("[^,]+") do
+                    values[#values + 1] = tonumber(v)
+                end
+                if #values >= 4 then
+                    entries[#entries + 1] = {
+                        id  = values[1],
+                        x   = values[2],
+                        y   = values[3],
+                        z   = values[4],
+                        h   = values[5] or 0,
+                        bs  = values[6] or 0,
+                        mt  = values[7] or 0,
+                        seq = values[8] or 0,
                     }
                 end
             end
@@ -213,16 +258,37 @@ function broadcast_event(msg_type, data)
 end
 
 function send_snapshot(conn_id, msg_type, entities)
-    local payload = serialize_positions(msg_type, entities)
+    local payload
+    if msg_type == MSG.PLAYER_POS then
+        payload = serialize_player_pos(entities)
+    else
+        payload = serialize_positions(msg_type, entities)
+    end
     gns.send_unreliable(conn_id, payload)
 end
 
 function broadcast_snapshot(msg_type, entities)
-    local payload = serialize_positions(msg_type, entities)
+    local payload
+    if msg_type == MSG.PLAYER_POS then
+        payload = serialize_player_pos(entities)
+    else
+        payload = serialize_positions(msg_type, entities)
+    end
     gns.send_unreliable(-1, payload)
 end
 
 -- Export message type constants
 function get_msg_types()
     return MSG
+end
+
+-- Sequence number helpers for PP messages.
+-- get_pp_seq() returns the last-emitted seq value (0 before any PP is sent).
+-- reset_pp_seq() is provided for test isolation — do not call in production code.
+function get_pp_seq()
+    return _pp_seq
+end
+
+function reset_pp_seq(n)
+    _pp_seq = n or 0
 end

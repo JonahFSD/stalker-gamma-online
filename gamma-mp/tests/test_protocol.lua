@@ -25,6 +25,7 @@ local function reset_all_state()
     set_verbose(false)
     reset_all()
     set_verbose(true)
+    mp_protocol.reset_pp_seq(0)
 end
 
 -- ============================================================================
@@ -58,7 +59,7 @@ local function parse_payload(payload)
     local msg_type = parts[1]
     local data = {}
 
-    if msg_type == "EP" or msg_type == "PP" then
+    if msg_type == "EP" then
         if #parts >= 2 then
             local entries = {}
             for entry in parts[2]:gmatch("[^;]+") do
@@ -66,6 +67,28 @@ local function parse_payload(payload)
                 for v in entry:gmatch("[^,]+") do vals[#vals+1] = tonumber(v) end
                 if #vals >= 4 then
                     entries[#entries+1] = { id=vals[1], x=vals[2], y=vals[3], z=vals[4], h=vals[5] or 1.0 }
+                end
+            end
+            data.entities = entries
+        end
+    elseif msg_type == "PP" then
+        -- Extended format: id,x,y,z,h,bs,mt,seq (fields 6-8 optional, default 0)
+        if #parts >= 2 then
+            local entries = {}
+            for entry in parts[2]:gmatch("[^;]+") do
+                local vals = {}
+                for v in entry:gmatch("[^,]+") do vals[#vals+1] = tonumber(v) end
+                if #vals >= 4 then
+                    entries[#entries+1] = {
+                        id  = vals[1],
+                        x   = vals[2],
+                        y   = vals[3],
+                        z   = vals[4],
+                        h   = vals[5] or 0,
+                        bs  = vals[6] or 0,
+                        mt  = vals[7] or 0,
+                        seq = vals[8] or 0,
+                    }
                 end
             end
             data.entities = entries
@@ -241,6 +264,92 @@ describe("Protocol: PLAYER_POS serialize/deserialize", function()
         assert_eq(1, #data.entities)
         assert_eq(0, data.entities[1].id)
         assert_true(math.abs(data.entities[1].x - 50.0) < 0.01)
+    end)
+
+    it("round-trips all new fields (h, bs, mt, seq)", function()
+        local MSG = mp_protocol.get_msg_types()
+        -- Seed counter so the auto-incremented seq lands on 42
+        mp_protocol.reset_pp_seq(41)
+        mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
+            { id = 7, x = 100.0, y = 5.5, z = 200.0, h = 1.5, bs = 1, mt = 2 }
+        })
+        local payload = last_unreliable()
+        local msg_type, data = parse_payload(payload)
+        assert_eq("PP", msg_type)
+        assert_eq(1, #data.entities)
+        local e = data.entities[1]
+        assert_eq(7, e.id)
+        assert_true(math.abs(e.h - 1.5) < 0.0001, "heading mismatch")
+        assert_eq(1, e.bs)
+        assert_eq(2, e.mt)
+        assert_eq(42, e.seq)
+    end)
+
+    it("backward-compat: old 5-field PP defaults bs/mt/seq to 0", function()
+        -- Simulate a PP message from a sender that only emits id,x,y,z,h (old format)
+        local orig_is_client = mp_core.is_client
+        local orig_is_host   = mp_core.is_host
+        mp_core.is_client = function() return true end
+        mp_core.is_host   = function() return false end
+
+        local captured = nil
+        local orig = mp_client_state.on_remote_player_pos
+        mp_client_state.on_remote_player_pos = function(data, conn_id) captured = data end
+
+        mp_protocol.on_message(1, "PP|3,10.0,20.0,30.0,0.5", 30)
+
+        mp_client_state.on_remote_player_pos = orig
+        mp_core.is_client = orig_is_client
+        mp_core.is_host   = orig_is_host
+
+        assert_not_nil(captured, "on_remote_player_pos should have been called")
+        assert_eq(1, #captured.entities)
+        local e = captured.entities[1]
+        assert_eq(3, e.id)
+        assert_true(math.abs(e.h - 0.5) < 0.0001, "h should survive")
+        assert_eq(0, e.bs,  "bs should default to 0")
+        assert_eq(0, e.mt,  "mt should default to 0")
+        assert_eq(0, e.seq, "seq should default to 0")
+    end)
+
+    it("sequence number auto-increments on each serialize", function()
+        local MSG = mp_protocol.get_msg_types()
+        mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
+            { id = 1, x = 0, y = 0, z = 0 }
+        })
+        local seq1 = mp_protocol.get_pp_seq()
+
+        mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
+            { id = 1, x = 1, y = 0, z = 0 }
+        })
+        local seq2 = mp_protocol.get_pp_seq()
+
+        assert_true(seq2 == seq1 + 1, "seq should increment by 1 each call")
+    end)
+
+    it("partial new fields: only h present, bs/mt/seq default to 0", function()
+        local orig_is_client = mp_core.is_client
+        local orig_is_host   = mp_core.is_host
+        mp_core.is_client = function() return true end
+        mp_core.is_host   = function() return false end
+
+        local captured = nil
+        local orig = mp_client_state.on_remote_player_pos
+        mp_client_state.on_remote_player_pos = function(data, conn_id) captured = data end
+
+        -- 6 fields: id,x,y,z,h,bs — mt and seq absent
+        mp_protocol.on_message(1, "PP|9,5.0,6.0,7.0,2.5,1", 30)
+
+        mp_client_state.on_remote_player_pos = orig
+        mp_core.is_client = orig_is_client
+        mp_core.is_host   = orig_is_host
+
+        assert_not_nil(captured)
+        local e = captured.entities[1]
+        assert_true(math.abs(e.h - 2.5) < 0.0001)
+        assert_eq(1, e.bs)
+        assert_eq(0, e.mt,  "mt should default to 0 when absent")
+        assert_eq(0, e.seq, "seq should default to 0 when absent")
     end)
 end)
 
