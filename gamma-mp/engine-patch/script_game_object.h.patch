@@ -1,0 +1,11 @@
+--- script_game_object.h (SetBodyYaw patch for MP puppet heading sync)
+---
+--- PURPOSE: Expose SetBodyYaw(float) to Lua for multiplayer puppet NPC heading control.
+--- Writes both m_body.current.yaw AND m_body.target.yaw so the engine's lerp
+--- (CustomMonster_VCPU.cpp:36) becomes a no-op for puppet entities.
+---
+--- LOCATION: After ForceSetRotation declaration (~line 1076)
+
+ 	void ForceSetRotation(Fvector rot, bool enable = true);
++	void SetBodyYaw(float yaw); // MP: set NPC body heading for puppet sync
+ 	void ForceSetAngle(Fvector ang, bool bActivate);

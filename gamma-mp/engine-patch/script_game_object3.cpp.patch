@@ -1,0 +1,23 @@
+--- script_game_object3.cpp (SetBodyYaw implementation)
+---
+--- PURPOSE: Implement SetBodyYaw — smart_cast to CAI_Stalker, write both
+--- movement().m_body.current.yaw and .target.yaw. Setting target=current
+--- prevents the lerp in CustomMonster_VCPU.cpp:36 from fighting us.
+---
+--- WHY NOT force_set_rotation: UpdateCL overwrites XFORM from NET_Last.o_model every frame.
+--- WHY NOT set_desired_direction: Gated behind movement_type != eMovementTypeStand
+--- (stalker_movement_manager_base.cpp:636). Standing NPCs skip it entirely.
+---
+--- LOCATION: After ForceSetRotation (~line 1843), before ForceSetAngle
+
++void CScriptGameObject::SetBodyYaw(float yaw)
++{
++	CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&object());
++	if (!stalker)
++		return;
++
++	stalker->movement().m_body.current.yaw = yaw;
++	stalker->movement().m_body.target.yaw  = yaw;
++}
++
+ void CScriptGameObject::ForceSetAngle(Fvector ang, bool bActivate)

@@ -1,0 +1,10 @@
+--- script_game_object_script3.cpp (SetBodyYaw luabind registration)
+---
+--- PURPOSE: Register set_body_yaw in Lua so mp_puppet.script can call
+--- game_obj:set_body_yaw(heading) on puppet NPCs each frame.
+---
+--- LOCATION: After force_set_rotation registration (~line 480)
+
+ 		.def("force_set_rotation", SAFE_WRAP(&CScriptGameObject::ForceSetRotation))
++		.def("set_body_yaw", SAFE_WRAP(&CScriptGameObject::SetBodyYaw))
+ 		.def("set_spatial_type", SAFE_WRAP(&CScriptGameObject::SetSpatialType))

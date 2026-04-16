@@ -1,0 +1,785 @@
+ Written gamma-mp/docs/PHASE1_IMPLEMENTATION_MAP.md (500+ lines).
+
+  8 critical discoveries that change the audit's assumptions:
+
+  ┌─────┬─────────────────────────────────────────────────┬───────────────────────────────────────┐
+  │  #  │                     Finding                     │                Impact                 │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │     │ set_desired_direction() does NOT rotate         │ Heading sync needs                    │
+  │ D1  │ standing NPCs — setup_movement_params is        │ force_set_rotation() or engine patch. │
+  │     │ skipped when eMovementTypeStand                 │  #1 blocker — requires spike test.    │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │ D2  │ set_switch_offline(false) forces entity online  │ Puppets can be created at any         │
+  │     │ bypassing distance check                        │ distance. Simplifies spawn logic.     │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │ D3  │ set_interactive() is mostly dead code in this   │ Remove from puppet spawn sequence —   │
+  │     │ Monolith fork                                   │ no benefit.                           │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │ D4  │ bForce param on set_visual_name() is dead code  │ No way to force-reload same visual.   │
+  │     │ (declared, never read)                          │ Doesn't affect us.                    │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │     │ force_set_position() includes                   │ Good: puppets won't clip through      │
+  │ D5  │ CollisionCorrectObjPos for live entities        │ terrain. Minor: may micro-jitter near │
+  │     │                                                 │  walls.                               │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │ D6  │ Cannot combine eMentalStateFree +               │ Crouching puppets must use            │
+  │     │ eBodyStateCrouch — ASSERT crash                 │ eMentalStateDanger (alert posture).   │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │ D7  │ Hit sounds/VFX still play on invulnerable       │ Cosmetic — acceptable for Phase 1.    │
+  │     │ stalkers                                        │                                       │
+  ├─────┼─────────────────────────────────────────────────┼───────────────────────────────────────┤
+  │     │ obj:script(true) freezes movement().update() —  │ Cannot use script control mode. Must  │
+  │ D8  │ breaks animation state propagation              │ brute-force override states every     │
+  │     │                                                 │ tick.                                 │
+  └─────┴─────────────────────────────────────────────────┴───────────────────────────────────────┘
+
+  The one thing that must happen before coding: Step 0 heading spike test in-game.
+  set_desired_direction() is broken for standing NPCs, so we need to validate force_set_rotation() or
+  an alternative approach.
+● Mod Conflict Scan — Entity Lifecycle for stalker_silent Puppet
+
+  CRITICAL Conflicts
+
+  ---
+  G.A.M.M.A. Dynamic Despawner (grok_dynamic_despawner.script)
+
+  - Hook: npc_on_update (lines 187-216)
+  - What it does: Iterates db.OnlineStalkers every ~30s tick. When online NPC count exceeds threshold
+  (default 40), bulk-releases excess NPCs via alife_release()
+  - Would it fire for puppet: YES
+  - Impact: CRITICAL — puppet will be silently despawned
+  - Protection checks: important_npcs[npc:section()], get_object_story_id(npc:id()),
+  npc:has_info("npcx_is_companion")
+  - Mitigation: Add stalker_silent to the important_npcs whitelist table, OR assign a story_id to the
+  puppet on spawn, OR set the npcx_is_companion infoportion
+
+  ---
+  NPCs Die in Emissions (surge_rush_scheme_common.script)
+
+  - Hook: Surge event handler (lines 329-331)
+  - What it does: Forces ALL alive stalkers into panic state during emissions:
+  npc:set_movement_type(move.run)
+  npc:set_body_state(move.standing)
+  npc:set_mental_state(anim.panic)
+  - Would it fire for puppet: YES — no section_name filter, applies to any IsStalker() with valid
+  community
+  - Impact: CRITICAL — puppet would visibly sprint in panic animation, breaking invisibility
+  - Mitigation: Guard with if npc:section() == "stalker_silent" then return end at the top of the
+  surge handler, OR ensure puppet is excluded from IsStalker() check
+
+  ---
+  NPCs Die in Emissions (surge_manager.script)
+
+  - Hook: CSurgeManager:turn_to_zombie() (lines 1439-1465)
+  - What it does: Converts NPCs to zombies during blowouts, branches on
+  string.sub(se_obj:section_name(), -1) digit
+  - Would it fire for puppet: YES — stalker_silent falls through to else case
+  - Impact: CRITICAL — puppet converted to sim_default_zombied_1, entity replaced entirely
+  - Mitigation: Add early return for stalker_silent section in the zombie conversion function
+
+  ---
+  HIGH Conflicts
+
+  ---
+  NPC Loot Claim (npc_loot_claim.script, Mod 211)
+
+  - Hook: npc_on_death_callback(victim, killer) (lines 162-189)
+  - What it does: Checks IsStalker(victim), creates loot claim entries, stores victim/killer IDs
+  - Would it fire for puppet: YES if puppet somehow dies
+  - Impact: HIGH — creates spurious loot claim records, stores puppet ID in claim tables
+  - Mitigation: Early-return guard on victim:section() == "stalker_silent"
+
+  ---
+  Improved Ranks (game_statistics.script, Mod 161)
+
+  - Hook: npc_on_death_callback(victim, killer) (lines 194-214)
+  - What it does: Increments kill statistics and modifies rank progression based on faction
+  - Would it fire for puppet: YES if puppet dies
+  - Impact: HIGH — corrupts player rank/statistics with phantom kill credit
+  - Mitigation: Guard on puppet section name
+
+  ---
+  Dynamic News Manager (dynamic_news_manager.script, Mod 116)
+
+  - Hook: npc_on_death_callback(victim, who) (lines 582-607)
+  - What it does: Generates PDA death news, accesses character_community(victim), checks factions
+  - Would it fire for puppet: YES if puppet dies
+  - Impact: HIGH — broadcasts news about invisible puppet's death to player PDA
+  - Mitigation: Guard on puppet section
+
+  ---
+  MEDIUM Conflicts
+
+  ---
+  DNPCAV Armor Visuals (dynamic_npc_armor_visuals.script, Mod 217)
+
+  - Hook: npc_on_item_take, server_entity_on_unregister (lines 49, 100, 198)
+  - What it does: Calls npc:set_visual_name() based on equipped armor, clears default_visuals[id] on
+  unregister
+  - Would it fire for puppet: YES — no section filter, only skips story NPCs with
+  get_object_story_id()
+  - Impact: MEDIUM — could change puppet's visual, breaking invisibility
+  - Mitigation: Assign story_id to puppet, or add section guard
+
+  ---
+  Facer/Melee Combat (xrs_facer.script, Mod 108)
+
+  - Hook: Combat update loop (lines 170-171, 196)
+  - What it does: Sets set_movement_type(move.stand), set_body_state(move.standing) during melee
+  combat
+  - Would it fire for puppet: MAYBE — requires npc:alive(), close range, and best_enemy exists
+  - Impact: MEDIUM — would force puppet into combat stance if enemy detected
+  - Mitigation: Ensure puppet has no enemies (AI suppression should handle this)
+
+  ---
+  No Exos in South (grok_no_north_faction_in_south.script, Mod 156)
+
+  - Hook: npc_on_update or periodic check (lines 238-282)
+  - What it does: Releases north-faction NPCs wearing heavy armor in southern maps
+  - Would it fire for puppet: MAYBE — depends on puppet's faction and visual/armor profile
+  - Impact: MEDIUM — could despawn puppet based on faction+armor criteria
+  - Mitigation: Ensure puppet faction/armor don't match north-in-south criteria, or whitelist
+
+  ---
+  Warfare Squad System (sim_squad_scripted.script, Mod 222)
+
+  - Hook: squad_on_register, squad_on_unregister (lines 1020-1030)
+  - What it does: Central squad management — assigns NPCs to squads, manages smart terrain targets
+  - Would it fire for puppet: MAYBE — if puppet has squad_id or valid smart_id
+  - Impact: MEDIUM — could assign puppet to a squad, causing it to receive movement orders
+  - Mitigation: Ensure puppet is spawned without squad assignment; don't use sim_squad_scripted for
+  creation
+
+  ---
+  ZCP Loot Spawner (smr_loot.script, ZCP 1.5d)
+
+  - Hook: npc_on_death_callback(obj, who) (lines 410-420)
+  - What it does: Spawns loot container physics objects on NPC death
+  - Would it fire for puppet: YES if puppet dies
+  - Impact: MEDIUM — spawns visible loot container at puppet's invisible position
+  - Mitigation: Guard on section name
+
+  ---
+  LOW Conflicts
+
+  ┌──────────┬────────────────────────────────────┬───────────────────────────┬──────────────────┐
+  │   Mod    │               Script               │           Hook            │      Notes       │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Snipers  │                                    │                           │ Only targets     │
+  │ Remover  │ grok_sniper_remover.script         │ alife():release           │ "sniper"         │
+  │          │                                    │                           │ sections — SAFE  │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Disguise │                                    │                           │ Read-only        │
+  │  System  │ gameplay_disguise.script           │ npc_on_update             │ suspicion        │
+  │          │                                    │                           │ tracking — SAFE  │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Useful   │                                    │ server_entity_on_unregist │ Only clears      │
+  │ Idiots   │ xr_corpse_detection.lua            │ er                        │ table entry —    │
+  │          │                                    │                           │ SAFE             │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Useful   │                                    │                           │ Early exit if no │
+  │ Idiots   │ xr_weapon_jam.lua                  │ npc_on_update             │  best_enemy —    │
+  │          │                                    │                           │ SAFE             │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ RF       │                                    │ server_entity_on_unregist │ Only clears RF   │
+  │ Receiver │ item_radio.script                  │ er                        │ target table —   │
+  │          │                                    │                           │ SAFE             │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Companio │ zz_companion_inventory_fix_mcm.scr │ server_entity_on_unregist │ Only clears spaw │
+  │ n Invent │ ipt                                │ er                        │ ned_items[id] —  │
+  │ ory      │                                    │                           │ SAFE             │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Guide    │ tasks_guide.script                 │ squad_on_unregister       │ Cleanup only —   │
+  │ Tasks    │                                    │                           │ SAFE             │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Blood    │ blood_pool.script                  │ npc_on_death_callback     │ Visual only —    │
+  │ Pools    │                                    │                           │ cosmetic         │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Body     │                                    │                           │ Adds marker only │
+  │ Dots     │ BlueDots.script                    │ npc_on_death_callback     │  — cosmetic      │
+  │ Minimap  │                                    │                           │                  │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Night    │ night_mutants.script               │ server_entity_on_unregist │ Mutant-specific  │
+  │ Mutants  │                                    │ er                        │ — SAFE           │
+  ├──────────┼────────────────────────────────────┼───────────────────────────┼──────────────────┤
+  │ Hideout  │                                    │ server_entity_on_unregist │ Furniture        │
+  │ Furnitur │ hf_map_objects.script              │ er                        │ tracking — SAFE  │
+  │ e        │                                    │                           │                  │
+  └──────────┴────────────────────────────────────┴───────────────────────────┴──────────────────┘
+
+  ---
+  _g.script Analysis
+
+  Location: C:\GAMMA\overwrite\gamedata\scripts\_g.script (primary)
+
+  Functions that fire during puppet spawn/update:
+
+  1. server_entity_on_register — fires for ALL entities. Calls
+  story_objects.check_spawn_ini_for_story_id(se_obj) which reads the .ini for story IDs. If
+  stalker_silent has no .ini entry for story_id, this is a no-op.
+  2. server_entity_on_unregister — fires for ALL entities via class lookup in
+  _ALIFE_UNREGISTER[class]. Clears storage manager data. Uses clsid() (engine class), not section_name
+   — so stalker_silent is treated as a normal stalker class.
+  3. alife_release() (lines 2166-2220) — reads se_obj:section_name() for debug logging and
+  ini_sys:r_string_ex(section, "class") for class lookup. Branches on clsid(), NOT section_name.
+  stalker_silent would be handled like any other stalker.
+
+  Guards for puppet: NONE FOUND
+
+  - Zero references to stalker_silent or puppet in _g.script
+  - No special handling in entity lifecycle paths
+  - All lifecycle code uses engine clsid() checks, not section_name strings
+
+  ---
+  Recommended Mitigation Strategy
+
+  Priority 1 — Prevent despawn (do before first spawn):
+  - Add stalker_silent to Dynamic Despawner's important_npcs whitelist
+  - OR assign a story_id to puppet on creation (protects against despawner + DNPCAV + No Exos)
+
+  Priority 2 — Prevent surge interference:
+  - Patch surge_rush_scheme_common.script with early return for stalker_silent
+  - Patch surge_manager.script turn_to_zombie() with early return for stalker_silent
+
+  Priority 3 — Prevent death-event noise (if puppet can die):
+  - Add a centralized guard in _g.script's death callback dispatcher that skips stalker_silent, OR
+  - Guard individually in npc_loot_claim, game_statistics, dynamic_news_manager, smr_loot
+
+  Priority 4 — Prevent AI override:
+  - Puppet's AI suppression should prevent best_enemy from being set, which naturally guards against
+  facer/combat mods
+  - Story_id assignment guards against visual overrides from DNPCAV
+
+✻ Baked for 11m 57s
+
+※ recap: Scanning all GAMMA mods for conflicts with the stalker_silent puppet entity. The scan is
+  complete — found 3 critical, 3 high, and 6 medium conflicts. Next step is patching the Dynamic
+  Despawner whitelist to prevent puppet despawn. (disable recaps in /config)
+
+ CATEGORY 1: actor_on_update Callbacks — 178 files
+
+  This is your biggest concern. Your mp_update() shares this callback with 178 other scripts.
+
+  ┌─────────────────────────────────────────────┬────────────────────────────┬───────────┬────────┐
+  │                Mod / Script                 │        What it does        │ Conflict? │ Impact │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ G.A.M.M.A. Actor Damage Balancer /          │ Bleeding state tracking    │ Maybe     │ MEDIUM │
+  │ grok_bleed_icon.script                      │ with 200ms delay           │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ Serious Tasks QoL / tasks_guide.script      │ Heavy quest guidance logic │ Maybe     │ MEDIUM │
+  │                                             │  every update              │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ G.A.M.M.A. 3D PDA / actor_effects.script    │ Headlamp/PDA animations    │ Maybe     │ HIGH   │
+  │                                             │ every frame                │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ Camera Reanimation Fixes /                  │ Heavy camera state         │ Maybe     │ MEDIUM │
+  │ camera_reanim_project.script                │ management                 │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ Enhanced Animations (multiple mods)         │ Animation state tracking   │ Maybe     │ MEDIUM │
+  │                                             │ per frame                  │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ ZCP 1.5d / bind_anomaly_field.script        │ Zone customization update  │ Maybe     │ LOW    │
+  │                                             │ loop                       │           │        │
+  ├─────────────────────────────────────────────┼────────────────────────────┼───────────┼────────┤
+  │ 76+ binding/init scripts                    │ Core engine binding        │ No        │ LOW    │
+  │                                             │ callbacks                  │           │        │
+  └─────────────────────────────────────────────┴────────────────────────────┴───────────┴────────┘
+
+  Assessment: No direct data conflict — these don't touch your position data. The real risk is
+  performance. 178 callbacks firing every frame means your network send could be delayed or
+  frame-dropped. Register your callback LAST and throttle sends to every 100-200ms, not every frame.
+
+  ---
+  CATEGORY 2: db.actor:position() Readers — 179 files
+
+  These all read position but none cache it in a way that would desync your MP data — they're all
+  read-only consumers.
+
+  ┌──────────────────────────────────────────────┬───────────────────────────┬───────────┬────────┐
+  │                 Mod / Script                 │       What it does        │ Conflict? │ Impact │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ ZCP 1.5d / sim_squad_scripted.script         │ Squad positioning logic   │ No        │ LOW    │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Warfare Patch / sim_squad_scripted.script    │ Faction warfare squad     │ No        │ LOW    │
+  │                                              │ deployment                │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Bounty Squads Rework /                       │ Bounty squad spawning     │ No        │ LOW    │
+  │ sim_squad_bounty.script                      │ near actor                │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Fair Fast Travel / game_fast_travel.script   │ Reads position for travel │ No        │ LOW    │
+  │                                              │  eligibility              │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Adjustable Waypoint /                        │ Stores waypoint at actor  │ No        │ LOW    │
+  │ tasks_placeable_waypoints.script             │ pos                       │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Ledge Grabbing /                             │ Position for ledge        │ No        │ LOW    │
+  │ demonized_ledge_grabbing.script              │ detection                 │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Dynamic Despawner /                          │ Despawn based on distance │ No        │ LOW    │
+  │ grok_dynamic_despawner.script                │  from actor               │           │        │
+  ├──────────────────────────────────────────────┼───────────────────────────┼───────────┼────────┤
+  │ Dialog FOV / dialog_fov.script               │ Position for dialog       │ No        │ LOW    │
+  │                                              │ camera                    │           │        │
+  └──────────────────────────────────────────────┴───────────────────────────┴───────────┴────────┘
+
+  Assessment: Safe. These are all read-only. No mod is writing to a position cache that could feed
+  stale data to your MP sync.
+
+  ---
+  CATEGORY 3: Player Teleportation — 6 mods found
+
+  These forcibly move the player and are the most dangerous for position desync.
+
+  ┌─────────────────────────────────────────────┬──────────────────────────┬───────────┬──────────┐
+  │                Mod / Script                 │       What it does       │ Conflict? │  Impact  │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Quick Companion Teleport /                  │ Teleports actor to       │ YES       │ CRITICAL │
+  │ qcteleport_mcm.script                       │ companion                │           │          │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Fair Fast Travel / game_fast_travel.script  │ Destination-based        │ YES       │ CRITICAL │
+  │                                             │ teleport                 │           │          │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Limited Fast Travel /                       │ Alt teleport system      │ YES       │ CRITICAL │
+  │ game_backpack_travel.script                 │                          │           │          │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Extra Level Transitions /                   │ Level transition         │ YES       │ CRITICAL │
+  │ lc_extra_transitions.script                 │ teleport                 │           │          │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Areas Transition w/o Confirm /              │ Smooth teleport on zone  │ YES       │ HIGH     │
+  │ ui_sr_teleport.script                       │ enter                    │           │          │
+  ├─────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Fuji's ISG Teleport / fuji_magician.script  │ Magic-system teleport    │ YES       │ HIGH     │
+  └─────────────────────────────────────────────┴──────────────────────────┴───────────┴──────────┘
+
+  Assessment: CRITICAL. When any of these fire, your MP mod will be sending the old position until the
+   next update tick. The remote player will see a "rubber-band" snap. You need to:
+  - Hook into these teleport events (or detect position deltas > threshold)
+  - Send an immediate forced position update after any teleport
+  - Consider disabling fast travel in MP mode entirely
+
+  ---
+  CATEGORY 4: on_key_press / F10 Conflicts — 107+ files
+
+  ┌─────────────────────────────────────────────────┬────────────────────────┬───────────┬────────┐
+  │                  Mod / Script                   │      What it does      │ Conflict? │ Impact │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ MCM / ui_mcm.script                             │ Master keybinding      │ Maybe     │ HIGH   │
+  │                                                 │ system                 │           │        │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ G.A.M.M.A. Keybind Fixes                        │ Overrides multiple     │ Maybe     │ HIGH   │
+  │                                                 │ keybindings            │           │        │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Useful Idiots / idiots_keybinds.script          │ Custom keybind manager │ Maybe     │ MEDIUM │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Drop Item Key /                                 │ F-key handler          │ Maybe     │ MEDIUM │
+  │ grok_drop_item_press_key_mcm.script             │                        │           │        │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ FDDA Redone / headgear_animations_hotkey.script │ Hotkey system          │ Maybe     │ LOW    │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Quick Action Wheel /                            │ Radial menu on         │ Maybe     │ LOW    │
+  │ haru_quick_action_wheel_mcm.script              │ keypress               │           │        │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Toggle Scope / ish_toggle_scope.script          │ Scope toggle hotkey    │ Maybe     │ LOW    │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Patches by Hotkey /                             │ Patch attachment key   │ Maybe     │ LOW    │
+  │ patches_by_hotkey_mcm.script                    │                        │           │        │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Free Zoom / Free_ZoomV2_mcm.script              │ Zoom toggle            │ Maybe     │ LOW    │
+  ├─────────────────────────────────────────────────┼────────────────────────┼───────────┼────────┤
+  │ Mark Switch / z_mark_switch.script              │ Mark system key        │ Maybe     │ LOW    │
+  └─────────────────────────────────────────────────┴────────────────────────┴───────────┴────────┘
+
+  Assessment: F10 specifically is likely unclaimed (most mods use F1-F4, numpad, or custom MCM binds),
+   but the keybind system is crowded. The on_key_press callback chain means your handler will fire
+  alongside others — it won't be "consumed." This is actually fine for F10 since you're just toggling
+  a UI panel. Recommend: Register through MCM so users can rebind if there IS a conflict.
+
+  ---
+  CATEGORY 5: exec_console_cmd Hooks — 76 files
+
+  ┌──────────────────────────────────────────────┬──────────────────────────┬───────────┬──────────┐
+  │                 Mod / Script                 │       What it does       │ Conflict? │  Impact  │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ YACS Campfire Saves /                        │ Overrides save function  │ YES       │ CRITICAL │
+  │ ish_campfire_saving.script                   │                          │           │          │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Ironman Roguelite / roguelite_manager.script │ Prevents/modifies saves  │ YES       │ CRITICAL │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ MCM / ui_mcm.script                          │ MCM console hooks        │ Maybe     │ MEDIUM   │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ DX Config Loader / dx_config_loader.script   │ GPU console commands     │ No        │ LOW      │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ UI Options (10+ mods)                        │ Settings via console     │ No        │ LOW      │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Enhanced Recoil /                            │ Recoil console           │ No        │ LOW      │
+  │ grok_bo_enhanced_recoil.script               │ integration              │           │          │
+  ├──────────────────────────────────────────────┼──────────────────────────┼───────────┼──────────┤
+  │ Workshop / ui_workshop.script                │ Workshop console cmds    │ No        │ LOW      │
+  └──────────────────────────────────────────────┴──────────────────────────┴───────────┴──────────┘
+
+  Assessment: The campfire save and ironman mods are the dangerous ones — they intercept or block the
+  save command. If your MP mod intercepts exec_console_cmd("save") to trigger a sync, these mods may
+  eat the command first or the save may never reach your handler. Recommend: Don't rely on
+  intercepting the save console command. Instead, hook on_before_save_input or save_state callbacks
+  which fire regardless of how the save was triggered.
+
+  ---
+  CATEGORY 6: item_in_slot() Readers — 219 files
+
+  ┌─────────────────────────────────────────────┬─────────────────────────────┬───────────┬────────┐
+  │                Mod / Script                 │        What it does         │ Conflict? │ Impact │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Unjam Reload / arti_jamming.script          │ Reads weapon slot for jam   │ No        │ LOW    │
+  │                                             │ state                       │           │        │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Magazines Redux / magazines.script          │ Magazine slot state         │ No        │ LOW    │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Body Health System /                        │ Armor slot for damage calc  │ No        │ LOW    │
+  │ zzz_player_injuries.script                  │                             │           │        │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ FDDA Redone series                          │ Consumable slot tracking    │ No        │ LOW    │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Outfit Speed/Animations                     │ Outfit slot for movement    │ No        │ LOW    │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Headgear Animations                         │ Helmet/NVG slot detection   │ No        │ LOW    │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Quick Action Wheel                          │ Slot-based action selection │ No        │ LOW    │
+  ├─────────────────────────────────────────────┼─────────────────────────────┼───────────┼────────┤
+  │ Autolooter / z_auto_looter.script           │ Checks slots before looting │ No        │ LOW    │
+  └─────────────────────────────────────────────┴─────────────────────────────┴───────────┴────────┘
+
+  Assessment: Safe. All read-only. No mod modifies slot behavior in a way that would give you wrong
+  data. Your PE (Player Equipment) messages will read correct values. Just throttle — don't send
+  equipment state every frame, only on change.
+
+  ---
+  CATEGORY 7: Network/Socket Communication — NONE FOUND
+
+  No mods open sockets, use HTTP, or do any external communication. Your socket will be the only one.
+  Completely safe.
+
+  ---
+  Summary Threat Matrix
+
+  ┌───────────────────┬───────┬─────────────────────┬────────────────────────────────────────────┐
+  │     Category      │ Files │ Critical Conflicts  │              Action Required               │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ actor_on_update   │ 178   │ 0 direct, perf risk │ Throttle to 100-200ms, register last       │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Position readers  │ 179   │ 0                   │ Safe, read-only                            │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Teleportation     │ 6     │ 6                   │ Detect jumps, force sync, or disable in MP │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Keybinds (F10)    │ 107   │ 0 likely            │ Register via MCM for rebindability         │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Save interception │ 76    │ 2                   │ Use save_state callback, not console cmd   │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Equipment slots   │ 219   │ 0                   │ Safe, send on change only                  │
+  ├───────────────────┼───────┼─────────────────────┼────────────────────────────────────────────┤
+  │ Network/sockets   │ 0     │ 0                   │ Clear                                      │
+  └───────────────────┴───────┴─────────────────────┴────────────────────────────────────────────┘
+
+  Top 3 Actions Before Phase 1 Ships:
+
+  1. Teleport detection — Add a position-delta check (if moved > 50m in one tick, force an immediate
+  position broadcast). This covers all 6 teleport mods without needing to patch each one.
+  2. Replace save interception — Switch from intercepting exec_console_cmd("save") to hooking
+  save_state callback. The campfire save mod and ironman mod will otherwise eat your saves.
+  3. Throttle actor_on_update — With 178 other mods on the same callback, sending network packets
+  every frame will tank performance. Use a timer (e.g., time_global() check) to only send every
+  100-200ms.
+
+● Complete Message Protocol Analysis
+
+  Here's the full end-to-end analysis of the gamma-mp message protocol.
+
+  ---
+  Phase 0 (Current) — Message Flow Diagram
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                          HOST (mp_core.mp_update)                   │
+  │                                                                     │
+  │  ┌─ Engine Callbacks ──────────────────────────────────────────┐    │
+  │  │  server_entity_on_register → on_entity_register()           │    │
+  │  │  server_entity_on_unregister → on_entity_unregister()       │    │
+  │  │  npc_on_death_callback → on_npc_death()                     │    │
+  │  │  monster_on_death_callback → on_monster_death()             │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  │                          ↓                                          │
+  │  ┌─ mp_host_events ───────────────────────────────────────────┐    │
+  │  │  on_entity_register()  → broadcast_event(ES)  [reliable]   │    │
+  │  │  on_entity_unregister()→ broadcast_event(ER)  [reliable]   │    │
+  │  │  on_npc_death()        → broadcast_event(ED)  [reliable]   │    │
+  │  │  send_snapshots()@20Hz → broadcast_snapshot(EP)[unreliable]│    │
+  │  │                        → broadcast_snapshot(PP)[unreliable]│    │
+  │  │  send_environment()@5s → broadcast_event(WS)  [reliable]   │    │
+  │  │                        → broadcast_event(TS)  [reliable]   │    │
+  │  │  send_full_state()     → send_event(ES×N,WS,TS)[reliable] │    │
+  │  │  on_host_level_load()  → broadcast_event(LC)  [reliable]   │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  │                                                                     │
+  │  ┌─ dispatch_host() ──────────────────────────────────────────┐    │
+  │  │  PP → on_client_player_pos(conn_id, data)   [STORED ONLY]  │    │
+  │  │  PE → on_client_player_equip(conn_id, data) [STORED ONLY]  │    │
+  │  │  PS → on_client_player_stats(conn_id, data) [STORED ONLY]  │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  └─────────────────────────────────────────────────────────────────────┘
+                                ↕ GNS
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                         CLIENT (mp_core.mp_update)                  │
+  │                                                                     │
+  │  ┌─ dispatch_client() ────────────────────────────────────────┐    │
+  │  │  ES → on_entity_spawn(data)        → queue/create entity   │    │
+  │  │  ED → on_entity_death(data)        → kill mapped entity    │    │
+  │  │  ER → on_entity_despawn(data)      → release mapped entity │    │
+  │  │  EP → on_entity_positions(entities)→ apply positions       │    │
+  │  │  SA → on_squad_assign(data)        → assign squad→smart    │    │
+  │  │  WS → on_weather_sync(data)        → set weather preset    │    │
+  │  │  TS → on_time_sync(data)           → set game time         │    │
+  │  │  FS → on_full_state(data)          → enter CLEANING state  │    │
+  │  │  LC → on_level_change(data)        → reset to IDLE         │    │
+  │  │  PP → on_remote_player_pos(data, conn_id)   [STORED ONLY]  │    │
+  │  │  PE → on_remote_player_equip(data, conn_id) [STORED ONLY]  │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  │                                                                     │
+  │  ┌─ Client Sends ─────────────────────────────────────────────┐    │
+  │  │  (Currently: NOTHING sent from client to host)              │    │
+  │  │  PP/PE/PS handlers exist in dispatch_host but no client     │    │
+  │  │  code calls send_snapshot(PP) or send_event(PE) yet         │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  │                                                                     │
+  │  ┌─ State Machine ────────────────────────────────────────────┐    │
+  │  │  IDLE → CLEANING (50 releases/frame)                        │    │
+  │  │       → SYNCING  (20 spawns/frame)                          │    │
+  │  │       → ACTIVE   (immediate apply)                          │    │
+  │  └─────────────────────────────────────────────────────────────┘    │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  PP Message Trace (Host → Client, Current)
+
+  The exact code path for player position from host actor to client storage:
+
+  HOST SIDE:
+  1. mp_core.mp_update()                          [mp_core.script:~310]
+     └─ 50ms timer fires
+        └─ mp_host_events.send_snapshots()        [mp_host_events.script:285]
+           └─ db.actor:position()                  [engine call, returns vector]
+              pos = db.actor:position()
+              dir = db.actor:direction()
+              h = math.atan2(dir.x, dir.z)        [heading from direction vector]
+              entities = {{id=0, x=pos.x, y=pos.y, z=pos.z, h=h}}
+              └─ mp_protocol.broadcast_snapshot(MSG.PP, entities)
+                                                   [mp_protocol.script:~218]
+                 └─ serialize_positions("PP", entities)
+                                                   [mp_protocol.script:56]
+                    → "PP|0,100.50,20.30,50.70,1.57"
+                    └─ gns.send_unreliable(-1, payload)
+                       → gns_send_unreliable() broadcast to all clients
+                          [gns_bridge.cpp:~350, iterates g_vecClients]
+
+  CLIENT SIDE:
+  2. mp_core.mp_update()                          [mp_core.script:~320]
+     └─ gns.poll() returns messages
+        └─ mp_protocol.on_message(conn_id, raw_data, size)
+                                                   [mp_protocol.script:120]
+           └─ deserialize("PP|0,100.50,20.30,50.70,1.57")
+                                                   [mp_protocol.script:67]
+              → msg_type="PP", data={entities={{id=0,x=100.5,y=20.3,z=50.7,h=1.57}}}
+              └─ dispatch_client("PP", data, conn_id)
+                                                   [mp_protocol.script:~172]
+                 └─ mp_client_state.on_remote_player_pos(data, conn_id)
+                                                   [mp_client_state.script]
+                    → STORES in _remote_players[conn_id].pos = {x,y,z,h}
+                    → *** NOT RENDERED *** (no visual representation created)
+
+  Key finding: The data reaches the client and is stored in _remote_players[conn_id], but nothing
+  reads that table to create or update a visual game object. The get_remote_players() getter exists
+  but nothing calls it in the render/update loop.
+
+  ---
+  Phase 1 (Proposed) — New Message Flows Needed
+
+  NEW FLOW 1: Client → Host PP (client sends own position)
+  ──────────────────────────────────────────────────────────
+    Client mp_update() @20Hz
+      └─ db.actor:position() + direction()
+         └─ mp_protocol.send_snapshot(0, MSG.PP, [{id, x, y, z, h}])
+            └─ gns.send_unreliable(0, "PP|0,x,y,z,h")  [to host]
+               └─ Host dispatch_host("PP") → on_client_player_pos(conn_id, data)
+                  └─ _client_players[conn_id].pos = {x,y,z,h}  [already exists]
+
+    WHERE TO INSERT: mp_core.mp_update(), after client_tick(), guarded by
+    _is_client and 50ms timer (same pattern as host send_snapshots)
+
+  NEW FLOW 2: Host → Clients PP Relay (host relays all player positions)
+  ──────────────────────────────────────────────────────────────────────
+    Host send_snapshots() @20Hz (already runs)
+      └─ Collect ALL player positions:
+         - Host actor: db.actor:position()
+         - Each client: _client_players[conn_id].pos
+         └─ For each client conn_id:
+            - Build entity list EXCLUDING that client's own position
+            - mp_protocol.send_snapshot(conn_id, MSG.PP, other_players)
+            └─ gns.send_unreliable(conn_id, "PP|id1,x,y,z,h;id2,x,y,z,h")
+
+    WHERE TO INSERT: mp_host_events.send_snapshots(), after existing EP
+    broadcast, replacing current single-host-actor PP broadcast
+
+  NEW FLOW 3: Client → Host PE (client sends equipment)
+  ──────────────────────────────────────────────────────
+    Client: on outfit/weapon change callback
+      └─ mp_protocol.send_event(0, MSG.PE, {weapon_section, outfit_section, ...})
+         └─ gns.send_reliable(0, "PE|weapon=wpn_ak74|outfit=stalker_suit_dolg")
+            └─ Host dispatch_host("PE") → on_client_player_equip(conn_id, data)
+               └─ _client_players[conn_id].equip = data  [already exists]
+
+    WHERE TO INSERT: New callback registration in mp_core for equipment
+    change events (actor_item_to_slot, actor_item_to_ruck)
+
+  NEW FLOW 4: Host → Clients PE Relay (host relays equipment)
+  ───────────────────────────────────────────────────────────
+    Host: on_client_player_equip() receives new equip data
+      └─ Broadcast to all OTHER clients:
+         - For each other_conn in _connected_clients (excluding sender):
+           mp_protocol.send_event(other_conn, MSG.PE, data_with_player_id)
+
+    WHERE TO INSERT: Inside on_client_player_equip() in mp_host_events.script,
+    after storing the data
+
+  ---
+  Message Size Analysis
+
+  Current PP message format: "PP|id,x,y,z,h" per player
+
+  Per-player PP payload:
+  - Header: "PP|" = 3 bytes
+  - Per entry: "id,xxx.xx,yyy.yy,zzz.zz,h.hh;" ≈ 35 bytes max
+
+  Enhanced PP (Phase 1) with additional fields (stance, speed, anim):
+  - Per entry: "id,xxx.xx,yyy.yy,zzz.zz,h.hh,stance,speed,anim;" ≈ 55 bytes max
+
+  Bandwidth for N players:
+
+  ┌─────────┬─────────────┬────────────────────┬──────────────────┐
+  │ Players │ PP size/msg │ PP msgs/sec (20Hz) │ PP bandwidth/sec │
+  ├─────────┼─────────────┼────────────────────┼──────────────────┤
+  │ 2       │ ~60 bytes   │ 20                 │ ~1.2 KB/s        │
+  ├─────────┼─────────────┼────────────────────┼──────────────────┤
+  │ 4       │ ~170 bytes  │ 20                 │ ~3.4 KB/s        │
+  ├─────────┼─────────────┼────────────────────┼──────────────────┤
+  │ 8       │ ~390 bytes  │ 20                 │ ~7.8 KB/s        │
+  ├─────────┼─────────────┼────────────────────┼──────────────────┤
+  │ 16      │ ~830 bytes  │ 20                 │ ~16.6 KB/s       │
+  ├─────────┼─────────────┼────────────────────┼──────────────────┤
+  │ 32      │ ~1.7 KB     │ 20                 │ ~34 KB/s         │
+  └─────────┴─────────────┴────────────────────┴──────────────────┘
+
+  64KB limit is not a concern. Even with 32 players and enhanced fields, a single PP snapshot is ~1.7
+  KB — well under the 64KB GNS max. The EP (entity positions, 100 entities/frame) at ~35 bytes each is
+   ~3.5 KB, also fine.
+
+  Total per-client bandwidth at 8 players:
+  - PP snapshots: ~7.8 KB/s
+  - EP snapshots: ~70 KB/s (100 entities × 35 bytes × 20Hz)
+  - Events (spawns/deaths/weather): ~1-2 KB/s sporadic
+  - Total: ~80 KB/s per client — very manageable
+
+  ---
+  Ordering Guarantees Analysis
+
+  GNS channel behavior:
+  - Reliable: Ordered, guaranteed delivery (TCP-like). Messages arrive in send order.
+  - Unreliable: Unordered, may drop (UDP-like). No ordering guarantee between unreliable messages, and
+   no ordering guarantee between reliable and unreliable channels.
+
+  Critical question: Can PE (reliable) arrive before PP (unreliable) if sent simultaneously?
+
+  Yes, absolutely. The reliable and unreliable channels are independent. Scenarios:
+
+  1. Client sends PP (unreliable) then PE (reliable) in same frame
+  2. PP packet is delayed/dropped by network
+  3. PE arrives first at host
+  4. Host receives PE for a player it has no position for yet
+
+  Does it matter? For the current architecture, no:
+  - on_client_player_equip() stores to _client_players[conn_id].equip
+  - on_client_player_pos() stores to _client_players[conn_id].pos
+  - These are independent fields — the relay/render code reads both at render time
+  - A player with equipment but no position yet just won't be rendered until the first PP arrives
+  - A player with position but no equipment renders with defaults
+
+  One edge case to handle: When relaying PE to other clients, include the player's last-known position
+   (or a "player_id" that clients can correlate). Don't assume the client has seen a PP for this
+  player yet.
+
+  ---
+  Adding New Handlers to dispatch_client/dispatch_host
+
+  Both dispatchers use simple if/elseif chains:
+
+  dispatch_client() (mp_protocol.script:142-179):
+  if msg_type == MSG.ES then
+      mp_client_state.on_entity_spawn(data)
+  elseif msg_type == MSG.ED then
+      ...
+  elseif msg_type == MSG.PP then
+      mp_client_state.on_remote_player_pos(data, conn_id)
+  -- ADD NEW: just append another elseif
+  elseif msg_type == MSG.NEW_TYPE then
+      mp_client_state.on_new_handler(data, conn_id)
+  end
+
+  dispatch_host() (mp_protocol.script:185-199):
+  if msg_type == MSG.PP then
+      mp_host_events.on_client_player_pos(conn_id, data)
+  elseif msg_type == MSG.PE then
+      ...
+  -- ADD NEW: same pattern
+  elseif msg_type == MSG.NEW_TYPE then
+      mp_host_events.on_new_handler(conn_id, data)
+  end
+
+  No risk of breaking existing handlers — it's a linear if/elseif chain, not a table dispatch. New
+  elseif branches are completely additive. The only requirement is defining the new MSG constant in
+  the message types table (lines 14-31).
+
+  ---
+  Summary: What Needs to Change for Phase 1
+
+  ┌───────────────────────────────────────────────┬────────────────────────────────────┬──────────┐
+  │                     File                      │               Change               │  Lines   │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_protocol.script:14-31                      │ No new MSG types needed (PP, PE    │ —        │
+  │                                               │ already defined)                   │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_protocol.script:185-199                    │ dispatch_host already handles PP,  │ Already  │
+  │                                               │ PE, PS                             │ done     │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_protocol.script:142-179                    │ dispatch_client already handles    │ Already  │
+  │                                               │ PP, PE                             │ done     │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_core.script:~310                           │ Add client-side PP/PE sending in   │ New code │
+  │                                               │ mp_update                          │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_host_events.script:285-365                 │ Modify send_snapshots() to relay   │ Modify   │
+  │                                               │ all player positions per-client    │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_host_events.script:on_client_player_pos    │ Add relay logic: forward to other  │ Modify   │
+  │                                               │ clients                            │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_host_events.script:on_client_player_equip  │ Add relay logic: forward to other  │ Modify   │
+  │                                               │ clients                            │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_client_state.script:on_remote_player_pos   │ Currently stores — needs to        │ Modify   │
+  │                                               │ create/update visual bone object   │          │
+  ├───────────────────────────────────────────────┼────────────────────────────────────┼──────────┤
+  │ mp_client_state.script:on_remote_player_equip │ Currently stores — needs to apply  │ Modify   │
+  │                                               │ visual model                       │          │
+  └───────────────────────────────────────────────┴────────────────────────────────────┴──────────┘
+
+  The protocol layer (serialization, dispatch, message types) is already built for Phase 1. The gaps
+  are:
+  1. Client doesn't send PP/PE yet (no code in client mp_update)
+  2. Host doesn't relay client PP/PE to other clients (stores but doesn't forward)
+  3. Client doesn't render remote players (stores position but creates no visual)
