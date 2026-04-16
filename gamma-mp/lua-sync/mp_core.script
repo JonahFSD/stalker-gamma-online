@@ -82,6 +82,12 @@ end
 function mp_stop_host()
     if not _is_host then return end
 
+    -- Clean up all puppets (remote player representations on host)
+    if mp_puppet then
+        mp_puppet.despawn_all()
+        mp_puppet.reset()
+    end
+
     mp_host_events.unregister_callbacks()
     gns.stop_host()
 
@@ -175,6 +181,12 @@ function mp_disconnect()
 
         -- Restore saves
         restore_client_saves()
+
+        -- Clean up puppets representing remote players
+        if mp_puppet then
+            mp_puppet.despawn_all()
+            mp_puppet.reset()
+        end
     end
 
     gns.disconnect()
@@ -198,6 +210,10 @@ end
 --- ID mapping table on the client.
 function on_client_entity_registered(se_obj, source_tag)
     if _is_client and se_obj then
+        -- Don't ID-map puppet entities spawned by our puppet system
+        if mp_puppet and mp_puppet.is_spawning_puppet and mp_puppet.is_spawning_puppet() then
+            return
+        end
         -- Filter ZCP/Warfare infrastructure objects — these are host-side only
         if source_tag == "sim_squad_scripted"
             or source_tag == "se_smart_terrain"
@@ -353,6 +369,8 @@ function mp_on_connection_event(evt)
         -- Host: cancel any in-progress full-state stream for this connection
         if _is_host and evt.conn_id then
             mp_host_events.cancel_full_state(evt.conn_id)
+            -- Remove the puppet representing the disconnected client
+            if mp_puppet then mp_puppet.despawn_puppet(evt.conn_id) end
         end
         if _is_client then
             -- Was fully connected, need full cleanup

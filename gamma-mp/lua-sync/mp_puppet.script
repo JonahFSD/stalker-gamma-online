@@ -23,6 +23,16 @@ local _puppet_se_ids = {}
 -- to the first update_puppet() call when level.object_by_id() returns non-nil.
 local _pending_infoportion = {}
 
+-- Spawn flag: true while spawn_puppet() is executing internal_create().
+-- Prevents synchronous callbacks (server_entity_on_register) from
+-- tracking/mapping the puppet entity before _puppet_se_ids is populated.
+local _spawning_puppet = false
+
+-- Well-known connection ID used to identify the host's puppet on clients.
+-- The host's own PP broadcast uses this as the 'id' field so clients can
+-- spawn and update the correct puppet.
+local HOST_CONN_ID = 0
+
 -- ============================================================================
 -- Private helpers
 -- ============================================================================
@@ -63,7 +73,10 @@ function spawn_puppet(conn_id, pos)
     -- internal_create bypasses the mod guard and returns the se_obj directly.
     -- The engine fires server_entity_on_register synchronously, so se_obj.id is
     -- valid immediately on return.
+    _spawning_puppet = true
     local se_obj = mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
+    _spawning_puppet = false
+
     if not se_obj then
         printf("[GAMMA MP PUPPET] ERROR: internal_create returned nil for conn %d", conn_id)
         return
@@ -126,7 +139,16 @@ end
 --- @param data     table   Fields: pos (vector), h (number), bs (number), mt (number)
 function update_puppet(conn_id, data)
     local puppet = _puppets[conn_id]
-    if not puppet then return end
+    if not puppet then
+        -- Lazy spawn: first PP for this remote player
+        if data and data.pos then
+            spawn_puppet(conn_id, data.pos)
+            puppet = _puppets[conn_id]
+            if not puppet then return end  -- spawn failed
+        else
+            return
+        end
+    end
 
     local se_id = puppet.se_id
     local go = level.object_by_id(se_id)
@@ -214,11 +236,28 @@ function get_puppet_count()
     return count
 end
 
+--- Returns true while spawn_puppet() is executing internal_create().
+--- Used by callbacks to avoid tracking/mapping the puppet entity.
+---
+--- @return boolean
+function is_spawning_puppet()
+    return _spawning_puppet
+end
+
+--- Returns the well-known connection ID for the host's puppet.
+--- The host's PP broadcast uses this as the entry 'id' field.
+---
+--- @return number
+function get_host_conn_id()
+    return HOST_CONN_ID
+end
+
 --- Clear all puppet state. Call on disconnect to wipe any lingering records.
 --- Does NOT despawn entities — call despawn_all() first if entities are alive.
 function reset()
     _puppets = {}
     _puppet_se_ids = {}
     _pending_infoportion = {}
+    _spawning_puppet = false
     printf("[GAMMA MP PUPPET] State reset")
 end

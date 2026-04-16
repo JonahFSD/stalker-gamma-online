@@ -301,6 +301,9 @@ level = {
     object_by_id = function(id)
         return _online[id]
     end,
+    vertex_id = function(pos)
+        return 0
+    end,
     get_weather = function()
         return _current_weather
     end,

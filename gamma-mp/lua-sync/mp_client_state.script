@@ -604,10 +604,21 @@ function on_remote_player_pos(data, conn_id)
     if not data.entities or #data.entities == 0 then return end
 
     for _, e in ipairs(data.entities) do
-        _remote_players[conn_id] = _remote_players[conn_id] or {}
-        _remote_players[conn_id].pos = vector():set(e.x, e.y, e.z)
-        _remote_players[conn_id].health = e.h
-        -- TODO: Phase 2 - render remote player as visible actor
+        -- Use PP entry id as player key (HOST_CONN_ID=0 for host, sender conn_id for relayed)
+        local player_id = e.id
+        _remote_players[player_id] = _remote_players[player_id] or {}
+        _remote_players[player_id].pos = vector():set(e.x, e.y, e.z)
+        _remote_players[player_id].h = e.h
+
+        -- Delegate to puppet system for visual representation
+        if mp_puppet and mp_puppet.update_puppet then
+            mp_puppet.update_puppet(player_id, {
+                pos = vector():set(e.x, e.y, e.z),
+                h = e.h or 0,
+                bs = e.bs or 0,
+                mt = e.mt or 0,
+            })
+        end
     end
 end
 
