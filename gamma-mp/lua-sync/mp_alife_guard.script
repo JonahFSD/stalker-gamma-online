@@ -44,6 +44,43 @@ local _block_count_release = 0
 local _LOG_LIMIT = 20  -- log first N blocks per type, then go silent
 
 -- ============================================================================
+-- Dummy server entity (absorbs all access without crashing)
+-- ============================================================================
+-- When alife():create() is blocked on the client, mods expect an se_obj back.
+-- Returning nil causes "attempt to index a nil value" in 80+ mods.
+-- This dummy object silently absorbs field reads and method calls so mods
+-- keep running without crashing. All methods return safe no-op values.
+
+local _dummy_pos = nil  -- lazy init: needs vector() which may not exist at load time
+
+local _dummy_mt = {
+    __index = function(self, key)
+        -- Common field accesses mods do on se_obj
+        if key == "id" then return 65535  -- invalid ID, won't collide
+        elseif key == "parent_id" then return 65535
+        elseif key == "position" then
+            if not _dummy_pos then
+                _dummy_pos = vector():set(0, 0, 0)
+            end
+            return _dummy_pos
+        elseif key == "m_level_vertex_id" then return 0
+        elseif key == "m_game_vertex_id" then return 0
+        elseif key == "online" then return false
+        elseif key == "alive" then return function() return false end
+        end
+        -- Everything else: return a function that returns nil
+        -- This handles any method call: obj:section_name(), obj:name(), obj:clsid(), etc.
+        return function() return nil end
+    end,
+    __newindex = function() end,  -- absorb field writes silently
+    __tostring = function() return "mp_dummy_se_obj" end,
+}
+
+local function make_dummy_se_obj()
+    return setmetatable({}, _dummy_mt)
+end
+
+-- ============================================================================
 -- Blocked stubs (returned in place of the real methods on client)
 -- ============================================================================
 
@@ -55,7 +92,7 @@ local function blocked_create(self, ...)
             printf("[GAMMA MP] (further create blocks will be silent)")
         end
     end
-    return nil
+    return make_dummy_se_obj()
 end
 
 local function blocked_release(self, ...)
@@ -170,8 +207,7 @@ local function install_global_overrides()
         _orig_alife_create = alife_create
         _G.alife_create = function(...)
             if client_check() then
-                blocked_create()
-                return nil
+                return blocked_create()
             end
             return _orig_alife_create(...)
         end
@@ -183,7 +219,7 @@ local function install_global_overrides()
         _G.alife_release = function(...)
             if client_check() then
                 blocked_release()
-                return nil
+                return
             end
             return _orig_alife_release(...)
         end
@@ -195,7 +231,7 @@ local function install_global_overrides()
         _G.alife_release_id = function(...)
             if client_check() then
                 blocked_release()
-                return nil
+                return
             end
             return _orig_alife_release_id(...)
         end
@@ -206,8 +242,7 @@ local function install_global_overrides()
         _orig_alife_create_item = alife_create_item
         _G.alife_create_item = function(...)
             if client_check() then
-                blocked_create()
-                return nil
+                return blocked_create()
             end
             return _orig_alife_create_item(...)
         end
