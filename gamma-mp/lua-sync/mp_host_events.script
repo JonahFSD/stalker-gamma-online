@@ -147,6 +147,8 @@ function unregister_callbacks()
 end
 
 --- One-time scan to populate entity registry on host start.
+--- Only tracks ONLINE entities (on the host's current level) — not the full
+--- 27K+ A-Life database. Offline entities on other levels don't need syncing.
 --- After this, register/unregister callbacks keep it current.
 function build_entity_registry()
     local sim = alife()
@@ -158,18 +160,47 @@ function build_entity_registry()
     _tracked_id_index = {}
     _snapshot_cursor = 1
 
-    -- This is the one and only linear scan. After this, incremental updates only.
+    -- Only track entities on the host's current level (online entities).
+    -- level.object_by_id() returns non-nil only for online entities.
+    local gg = game_graph()
+    local actor_gvid = db.actor and db.actor:game_vertex_id()
+    local actor_level_id = nil
+    if gg and actor_gvid and gg:valid_vertex_id(actor_gvid) then
+        actor_level_id = gg:vertex(actor_gvid):level_id()
+    end
+
+    local total_scanned = 0
     for id = 0, 65534 do
-        if sim:object(id) then
-            _tracked_entities[id] = true
-            _tracked_count = _tracked_count + 1
-            local n = #_tracked_ids + 1
-            _tracked_ids[n] = id
-            _tracked_id_index[id] = n
+        local se_obj = sim:object(id)
+        if se_obj then
+            total_scanned = total_scanned + 1
+            -- Filter: only track entities on the same level as the host
+            local dominated = false
+            if actor_level_id then
+                local gvid = se_obj.m_game_vertex_id
+                if gg:valid_vertex_id(gvid) then
+                    local ent_level_id = gg:vertex(gvid):level_id()
+                    if ent_level_id == actor_level_id then
+                        dominated = true
+                    end
+                end
+            else
+                -- No actor yet, track everything (fallback)
+                dominated = true
+            end
+
+            if dominated then
+                _tracked_entities[id] = true
+                _tracked_count = _tracked_count + 1
+                local n = #_tracked_ids + 1
+                _tracked_ids[n] = id
+                _tracked_id_index[id] = n
+            end
         end
     end
 
-    printf("[GAMMA MP] Entity registry built: %d entities tracked", _tracked_count)
+    printf("[GAMMA MP] Entity registry built: %d online entities tracked (of %d total)",
+        _tracked_count, total_scanned)
 end
 
 -- ============================================================================
@@ -188,13 +219,26 @@ function on_entity_register(se_obj, source_tag)
     end
 
     -- ZCP/Warfare fire this callback from class overrides with a source_tag.
-    -- These are simulation infrastructure — track them but don't broadcast
-    -- spawn events for them (clients don't need squad/smart terrain objects).
+    -- These are simulation infrastructure — don't track or broadcast.
     if source_tag == "sim_squad_scripted"
         or source_tag == "se_smart_terrain"
         or source_tag == "sim_squad_warfare" then
-        track_entity(se_obj.id)
         return
+    end
+
+    -- Only track entities on the host's current level (online entities).
+    local gg = game_graph()
+    if gg and db.actor then
+        local actor_gvid = db.actor:game_vertex_id()
+        if gg:valid_vertex_id(actor_gvid) then
+            local actor_lvl = gg:vertex(actor_gvid):level_id()
+            local ent_gvid = se_obj.m_game_vertex_id
+            if ent_gvid and gg:valid_vertex_id(ent_gvid) then
+                if gg:vertex(ent_gvid):level_id() ~= actor_lvl then
+                    return  -- different level, skip
+                end
+            end
+        end
     end
 
     -- Track locally
@@ -359,6 +403,10 @@ function send_snapshots()
         local pos = actor:position()
         local dir = actor:direction()
         local heading = math.atan2(dir.x, dir.z)
+        -- body_state() and movement_type() can throw on CAI_Stalker if actor
+        -- is in a transitional state — pcall to avoid frame-spam errors
+        local ok_bs, bs = pcall(function() return actor:body_state() end)
+        local ok_mt, mt = pcall(function() return actor:movement_type() end)
         mp_protocol.broadcast_snapshot(MSG.PLAYER_POS, {
             {
                 id = 0,  -- HOST_CONN_ID: identifies host's puppet on clients
@@ -366,8 +414,8 @@ function send_snapshots()
                 y  = pos.y,
                 z  = pos.z,
                 h  = heading,
-                bs = actor:body_state(),
-                mt = actor:movement_type(),
+                bs = ok_bs and bs or 0,
+                mt = ok_mt and mt or 0,
             }
         })
     end
