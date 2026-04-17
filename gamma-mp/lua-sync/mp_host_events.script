@@ -327,13 +327,15 @@ function send_snapshots()
                     if obj then
                         local pos = obj:position()
                         if pos then
+                            local dir = obj:direction()
+                            local heading = dir and math.atan2(dir.x, dir.z) or 0
                             count = count + 1
                             entities[count] = {
                                 id = id,  -- host's native ID
                                 x = pos.x,
                                 y = pos.y,
                                 z = pos.z,
-                                h = obj:health() or 1.0,
+                                h = heading,
                             }
                         end
                     end
