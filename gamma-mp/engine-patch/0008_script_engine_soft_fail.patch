@@ -1,0 +1,99 @@
+From bc5bbc8855310dcb0e12a4e90b32ca91478a925c Mon Sep 17 00:00:00 2001
+From: Jonah-Elliott <jonahwelliott@gmail.com>
+Date: Fri, 17 Apr 2026 18:45:53 -0500
+Subject: [PATCH] feat(engine): soft-fail lua_pcall_failed on mp_client_mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When ai().get_alife()->mp_client_mode() is true, convert fatal Lua
+errors into rate-limited log lines instead of aborting the engine.
+Host and singleplayer behavior unchanged — Debug.fatal still fires
+when alife is null or mp_client_mode is false.
+
+Rate limits: 20 occurrences/signature for our sync layer (path
+contains gamma-mp or mp_), 5 for third-party mods. Signature key
+is short_src:currentline. Log tags: [MP-OWN] vs [MP-MOD] for grep.
+
+Uses get_alife() pointer accessor (not the reference getter) to
+stay null-safe during pre-level script execution — alife is null
+on main menu and load paths, which would otherwise VERIFY-crash.
+---
+ src/xrServerEntities/script_engine.cpp | 52 +++++++++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/src/xrServerEntities/script_engine.cpp b/src/xrServerEntities/script_engine.cpp
+index 30392b37..c8eb8f97 100644
+--- a/src/xrServerEntities/script_engine.cpp
++++ b/src/xrServerEntities/script_engine.cpp
+@@ -13,8 +13,10 @@
+ #include "script_process.h"
+ #include "../build_config_defines.h"
+ #include "script_storage.h"
++#include "alife_simulator.h"
+ #include <unordered_map>
+ #include <set>
++#include <string>
+ 
+ #ifdef USE_DEBUGGER
+ #	ifndef USE_LUA_STUDIO
+@@ -283,7 +285,55 @@ int CScriptEngine::lua_pcall_failed(lua_State* L)
+ 	LPCSTR error_msg = error_str.c_str();
+ 
+ #if !XRAY_EXCEPTIONS
+-	Debug.fatal(DEBUG_INFO, error_msg);
++	// GAMMA MP: soft-fail on client — log rate-limited, do not fatal.
++	// Host and SP still go fatal via Debug.fatal in the else branch below.
++	const CALifeSimulator* alife_ptr = ai().get_alife();
++	const bool mp_client = alife_ptr && alife_ptr->mp_client_mode();
++
++	if (mp_client) {
++		// Locate the top Lua (non-C) frame for the signature key.
++		lua_Debug di;
++		memset(&di, 0, sizeof(di));
++		const char* src = "?";
++		int line_no = 0;
++		for (int i = 0; lua_getstack(L, i, &di); ++i) {
++			lua_getinfo(L, "Sl", &di);
++			if (di.what && xr_strcmp(di.what, "C") != 0 && di.currentline > 0) {
++				src = (di.short_src[0] ? di.short_src : "?");
++				line_no = di.currentline;
++				break;
++			}
++		}
++
++		const bool own_layer = (strstr(src, "gamma-mp") != nullptr) ||
++		                       (strncmp(src, "mp_", 3) == 0) ||
++		                       (strstr(src, "\\mp_") != nullptr) ||
++		                       (strstr(src, "/mp_") != nullptr);
++		const int threshold = own_layer ? 20 : 5;
++		const char* tag = own_layer ? "[MP-OWN]" : "[MP-MOD]";
++
++		// File-static rate-limit map. Lua is single-threaded — no lock needed.
++		static std::unordered_map<std::string, int> s_mp_fail_counts;
++
++		char key_buf[512];
++		xr_sprintf(key_buf, sizeof(key_buf), "%s:%d", src, line_no);
++		std::string key(key_buf);
++
++		int& count = s_mp_fail_counts[key];
++		count += 1;
++
++		if (count <= threshold) {
++			ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
++				"! %s %s:%d | %s", tag, src, line_no, error_msg);
++		} else if (count == threshold + 1) {
++			ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
++				"! %s %s:%d | SILENCED (threshold %d reached, further occurrences suppressed)",
++				tag, src, line_no, threshold);
++		}
++		// Soft-fail: fall through without calling Debug.fatal.
++	} else {
++		Debug.fatal(DEBUG_INFO, error_msg);
++	}
+ #endif
+ 	if (lua_isstring(L, -1))
+ 		lua_pop(L, 1);
+-- 
+2.53.0.windows.3
+

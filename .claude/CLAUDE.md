@@ -58,7 +58,9 @@ Use this to jump directly to the right file. Don't grep for things that are list
 | `gns_bridge_luabind.cpp` | Engine integration — loads DLL, registers `gns.*` namespace in Lua | `LoadGnsBridge()` uses `GetModuleFileNameA` for absolute path. Registers all gns_* functions under Lua `gns` namespace via luabind. |
 | `gns_bridge_poll.cpp` | Lua-friendly poll wrappers | Returns Lua tables from `gns.poll()` and `gns.poll_events()` |
 
-### Engine Patches (`gamma-mp/engine-patch/`) — 4 patches, all applied
+### Engine Patches (`gamma-mp/engine-patch/`) — 8 patches, all applied
+
+Format note: patches 1–7 are prose-format ("FIND / REPLACE" narrative). Patch 0008 onward uses proper `git format-patch` output (git-am-compatible).
 
 | File | What It Does |
 |------|--------------|
@@ -66,6 +68,10 @@ Use this to jump directly to the right file. Don't grep for things that are list
 | `alife_update_manager.cpp.patch` | Guards `update()` and `shedule_Update()` with early return when `m_mp_client_mode`. Constructor init to false. |
 | `alife_simulator_script.cpp.patch` | Lua bindings: `alife():set_mp_client_mode(bool)`, `alife():mp_client_mode()` |
 | `level_script.cpp.patch` | `level.set_game_time(h,m,s)` — absolute time set for MP sync (engine only has `change_game_time` which is delta-only). Handles backward time via 24h wraparound. |
+| `script_game_object.h.patch` | Adds `SetBodyYaw(float)` declaration after `ForceSetRotation` (~line 1076). Used for Phase 1 puppet heading. |
+| `script_game_object3.cpp.patch` | `SetBodyYaw` implementation — writes `movement().m_body.current.yaw` and `movement().m_body.target.yaw`. |
+| `script_game_object_script3.cpp.patch` | luabind registration `set_body_yaw` (~line 480). |
+| `0008_script_engine_soft_fail.patch` | `lua_pcall_failed` soft-fails on client via `mp_client_mode` — converts engine-fatal Lua errors into rate-limited log lines (20/sig for own sync layer, 5/sig for mods; signature is `short_src:currentline`; tags `[MP-OWN]`/`[MP-MOD]`). Null-safe via `get_alife()` pointer accessor. Keeps dummy `se_obj` gaps and other client-side mod failures from killing the session. |
 
 ### Docs & Prompts (`gamma-mp/`)
 
