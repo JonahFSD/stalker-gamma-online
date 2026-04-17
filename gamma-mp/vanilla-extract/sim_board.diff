@@ -1,0 +1,119 @@
+--- C:/Users/jonah/Documents/GitHub/stalker-gamma-online/gamma-mp/vanilla-extract/scripts/sim_board.script	2026-04-17 17:45:47.964897700 -0500
++++ "C:/GAMMA/mods/G.A.M.M.A. ZCP 1.4 Balanced Spawns/gamedata/scripts/sim_board.script"	2026-04-15 01:22:01.648624700 -0500
+@@ -137,20 +137,34 @@
+ 	-- end
+ 
+ 	local squad = alife_create(squad_id,spawn_smart.position,	spawn_smart.m_level_vertex_id,spawn_smart.m_game_vertex_id)
+-	squad:create_npc(spawn_smart)
+-	self:assign_squad_to_smart(squad, spawn_smart.id)
+-
+-	local sim = alife()
+-	for k in squad:squad_members() do
+-		local se_obj = k.object or k.id and sim:object(k.id)
+-		if (se_obj) then
+-			SIMBOARD:setup_squad_and_group(se_obj)
+-			-- Alundaio
+-			SendScriptCallback("squad_on_npc_creation",squad,se_obj,spawn_smart)
+-			-- Alundaio
++	if squad then
++		squad:create_npc(spawn_smart)
++		-- SMR
++		smr_debug.get_log().info("simboard", "removing disabled mutants from squad %s (smart: %s)", squad:section_name(), spawn_smart:name())
++		smr_pop.remove_disabled_mutants_from_squad(squad, spawn_smart)
++		smr_debug.get_log().info("simboard", "adjusting squad size for squad %s (smart: %s)", squad:section_name(), spawn_smart:name())
++		smr_pop.adjust_squad_size(squad, spawn_smart)
++		smr_debug.get_log().info("simboard", "replacing mutant variants for squad %s (smart: %s)", squad:section_name(), spawn_smart:name())
++		smr_pop.replace_mutant_variants_in_squad(squad, spawn_smart)
++		-- SMR END
++		self:assign_squad_to_smart(squad, spawn_smart.id)
++
++		local sim = alife()
++		for k in squad:squad_members() do
++			local se_obj = k.object or k.id and sim:object(k.id)
++			if (se_obj) then
++				SIMBOARD:setup_squad_and_group(se_obj)
++				-- Alundaio
++				SendScriptCallback("squad_on_npc_creation",squad,se_obj,spawn_smart)
++				-- Alundaio
++			end
+ 		end
+-    end
+-	return squad
++		-- SMR
++		smr_debug.get_log().info("simboard", "setting up civil war relations for squad %s (smart: %s)", squad:section_name(), spawn_smart:name())
++		smr_civil_war.setup_civil_war_squad(squad, spawn_smart:name())
++		-- SMR END
++		return squad
++	end
+ end
+ 
+ function simulation_board:create_squad_at_named_location(loc_name, squad_id) -- tdef
+@@ -253,7 +267,7 @@
+ 
+ 	squad:assign_smart(self.smarts[smart_id].smrt,old_smart_id)
+ 
+-	--' Прописываем отряд в новом смарте.
++	--' пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.
+ 	if not (self.smarts[smart_id].squads[squad.id]) then
+ 		self.smarts[smart_id].squads[squad.id] = true
+ 		if not (squad:get_script_target()) then
+@@ -283,6 +297,10 @@
+ -- Filling start location for squads from "simulation.ltx"
+ function simulation_board:fill_start_position()
+ 
++	-- SMR
++	smr_civil_war.setup_factions_relation()
++	-- SMR END
++
+ 	-- Test map
+ 	if (axr_main.config:r_value("character_creation","new_game_test",1) == true) then
+ 		axr_main.config:w_value("character_creation","new_game_test")
+@@ -304,16 +322,12 @@
+ 	end
+ 	self.start_position_filled = true
+ 	
+-	local setting_ini
+-	if (IsSurvivalMode()) then 
+-		setting_ini = ini_file("misc\\simulation_survival_mode.ltx")
+-	else 
+-		setting_ini = ini_file("misc\\simulation.ltx")
+-	end 
+-	
+-	local stalker_pop_factor = ui_options.get("alife/general/alife_stalker_pop")
+-	local monster_pop_factor = ui_options.get("alife/general/alife_mutant_pop")
+-		
++	-- SMR
++	local setting_ini = smr_pop.get_population_preset()
++	local stalker_pop_factor = smr_pop.get_stalker_pop_factor() or 0.6
++	local monster_pop_factor = smr_pop.get_monster_pop_factor() or 0.6
++	-- SMR END
++
+ 	local result, squad_section, count, li, lc
+ 	setting_ini:section_for_each(function(section)
+ 		lc = setting_ini:line_count(section)
+@@ -326,7 +340,7 @@
+ 				local common = ini_sys:r_bool_ex(squad_section,"common")
+ 				local faction = ini_sys:r_string_ex(squad_section,"faction")
+ 				if common then
+-				
++
+ 					-- Common mutants
+ 					if is_squad_monster[faction] then
+ 						count = count*monster_pop_factor
+@@ -345,10 +359,13 @@
+ 							count = round_idp(count)
+ 						end
+ 					end
++				else
+ 				end
+-					
+-				for i=1,count do
+-					self:create_squad(smart,squad_section)
++
++				for i=1,count do			
++					-- SMR
++					smr_pop.smr_handle_spawn(squad_section, smart)
++					-- SMR END
+ 				end
+ 			else 
+ 				printf("sim_board:fill_start_position incorrect smart by name %s",section)
