@@ -81,8 +81,15 @@ function spawn_puppet(conn_id, pos)
     -- engine fires server_entity_on_register synchronously during create().
     _spawning_puppet = true
     _last_spawned_puppet_id = nil
-    mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
+    local ok, err = pcall(function()
+        mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
+    end)
     _spawning_puppet = false
+
+    if not ok then
+        printf("[GAMMA MP PUPPET] ERROR: create threw for conn %d: %s", conn_id, tostring(err))
+        return
+    end
 
     local se_id = _last_spawned_puppet_id
     if not se_id then

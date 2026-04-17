@@ -661,8 +661,10 @@ function on_remote_player_pos(data, conn_id)
         _remote_players[player_id].pos = vector():set(e.x, e.y, e.z)
         _remote_players[player_id].h = e.h
 
-        -- Delegate to puppet system for visual representation
-        if mp_puppet and mp_puppet.update_puppet then
+        -- Delegate to puppet system for visual representation.
+        -- Only spawn/update puppets in ACTIVE state — during CLEANING/SYNCING the
+        -- world is being rebuilt and entity creation can crash natively.
+        if _sync_state == STATE_ACTIVE and mp_puppet and mp_puppet.update_puppet then
             mp_puppet.update_puppet(player_id, {
                 pos = vector():set(e.x, e.y, e.z),
                 h = e.h or 0,
