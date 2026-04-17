@@ -8,7 +8,7 @@
 --- WIRING: This module exposes an API only. Dispatch wiring into mp_protocol
 --- and mp_client_state happens in C9 (integration commit).
 
-local PUPPET_SECTION = "stalker_sim_default_military_0"
+local PUPPET_SECTION = "sim_default_military_0"
 
 -- Primary tracking table: conn_id -> puppet record
 -- Record fields: se_id, last_pos, last_h, last_bs, last_mt, needs_infoportion
