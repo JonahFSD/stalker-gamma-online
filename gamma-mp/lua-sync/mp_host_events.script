@@ -215,6 +215,7 @@ function on_entity_register(se_obj, source_tag)
     -- spawn_puppet sets this flag around internal_create; the engine fires
     -- server_entity_on_register synchronously before _puppet_se_ids is populated.
     if mp_puppet and mp_puppet.is_spawning_puppet and mp_puppet.is_spawning_puppet() then
+        mp_puppet.on_puppet_registered(se_obj)
         return
     end
 

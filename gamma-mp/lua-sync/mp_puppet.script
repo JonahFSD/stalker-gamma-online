@@ -28,6 +28,10 @@ local _pending_infoportion = {}
 -- tracking/mapping the puppet entity before _puppet_se_ids is populated.
 local _spawning_puppet = false
 
+-- Capture ID from the synchronous server_entity_on_register callback during spawn.
+-- X-Ray's alife():create() doesn't reliably return the se_obj in all engine builds.
+local _last_spawned_puppet_id = nil
+
 -- Well-known connection ID used to identify the host's puppet on clients.
 -- The host's own PP broadcast uses this as the 'id' field so clients can
 -- spawn and update the correct puppet.
@@ -70,19 +74,21 @@ function spawn_puppet(conn_id, pos)
     local lvid = level.vertex_id(pos)
     local gvid = db.actor and db.actor:game_vertex_id() or 0
 
-    -- internal_create bypasses the mod guard and returns the se_obj directly.
-    -- The engine fires server_entity_on_register synchronously, so se_obj.id is
-    -- valid immediately on return.
+    -- internal_create bypasses the mod guard. X-Ray's alife():create() does NOT
+    -- reliably return the se_obj in all engine builds — the return can be nil or
+    -- a stale function reference. Instead, we capture the new entity's ID via the
+    -- _last_spawned_puppet_id flag, which on_puppet_registered() sets when the
+    -- engine fires server_entity_on_register synchronously during create().
     _spawning_puppet = true
-    local se_obj = mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
+    _last_spawned_puppet_id = nil
+    mp_alife_guard.internal_create(sim, PUPPET_SECTION, pos, lvid, gvid)
     _spawning_puppet = false
 
-    if not se_obj then
-        printf("[GAMMA MP PUPPET] ERROR: internal_create returned nil for conn %d", conn_id)
+    local se_id = _last_spawned_puppet_id
+    if not se_id then
+        printf("[GAMMA MP PUPPET] ERROR: create callback never fired for conn %d", conn_id)
         return
     end
-
-    local se_id = se_obj.id
 
     _puppets[conn_id] = {
         se_id              = se_id,
@@ -97,7 +103,8 @@ function spawn_puppet(conn_id, pos)
     -- Give infoportion now if the entity is already online; otherwise defer.
     local go = level.object_by_id(se_id)
     if go then
-        try_give_infoportion(se_obj)
+        local se_obj = sim:object(se_id)
+        if se_obj then try_give_infoportion(se_obj) end
     else
         _pending_infoportion[se_id] = true
         _puppets[conn_id].needs_infoportion = true
@@ -242,6 +249,15 @@ end
 --- @return boolean
 function is_spawning_puppet()
     return _spawning_puppet
+end
+
+--- Called by mp_core.on_client_entity_registered when _spawning_puppet is true.
+--- Captures the newly created entity's ID so spawn_puppet() can use it
+--- (since alife():create() doesn't reliably return the se_obj).
+function on_puppet_registered(se_obj)
+    if se_obj and _spawning_puppet then
+        _last_spawned_puppet_id = se_obj.id
+    end
 end
 
 --- Returns the well-known connection ID for the host's puppet.

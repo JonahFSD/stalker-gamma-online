@@ -210,8 +210,10 @@ end
 --- ID mapping table on the client.
 function on_client_entity_registered(se_obj, source_tag)
     if _is_client and se_obj then
-        -- Don't ID-map puppet entities spawned by our puppet system
+        -- Don't ID-map puppet entities spawned by our puppet system —
+        -- but DO capture the ID so spawn_puppet() can use it
         if mp_puppet and mp_puppet.is_spawning_puppet and mp_puppet.is_spawning_puppet() then
+            mp_puppet.on_puppet_registered(se_obj)
             return
         end
         -- Filter ZCP/Warfare infrastructure objects — these are host-side only
