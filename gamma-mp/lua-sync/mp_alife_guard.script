@@ -251,6 +251,53 @@ local function install_global_overrides()
     printf("[GAMMA MP] alife_guard: global wrappers overridden (alife_create/release/release_id/create_item)")
 end
 
+-- ============================================================================
+-- Layer 3: Callback pcall shield
+-- ============================================================================
+-- On the client, ALL mod callbacks registered via RegisterScriptCallback are
+-- wrapped in pcall. If a mod's callback throws (nil method, missing data, etc.),
+-- we log it and continue instead of showing the fatal error dialog.
+-- This prevents 400+ mods from crashing the client during MP sync.
+
+local _orig_send_callback = nil
+local _callback_error_set = {}  -- dedup: error_key -> count
+local _CALLBACK_LOG_LIMIT = 5   -- log first N occurrences per unique error
+
+local function install_callback_shield()
+    -- Patch SendScriptCallback (the DISPATCH function, not registration).
+    -- This wraps every callback invocation on the client in pcall, regardless
+    -- of when the callback was registered. Catches all 400+ mods.
+    if not _G.SendScriptCallback then return end
+    _orig_send_callback = _G.SendScriptCallback
+
+    _G.SendScriptCallback = function(name, ...)
+        if not client_check() then
+            -- Not a client — dispatch normally (host/singleplayer)
+            return _orig_send_callback(name, ...)
+        end
+        local ok, err = pcall(_orig_send_callback, name, ...)
+        if not ok then
+            local key = tostring(name) .. "|" .. tostring(err)
+            _callback_error_set[key] = (_callback_error_set[key] or 0) + 1
+            if _callback_error_set[key] <= _CALLBACK_LOG_LIMIT then
+                printf("[GAMMA MP] MOD CRASH in callback '%s': %s", tostring(name), tostring(err))
+                if _callback_error_set[key] == _CALLBACK_LOG_LIMIT then
+                    printf("[GAMMA MP] (further '%s' crashes will be silent)", tostring(name))
+                end
+            end
+        end
+    end
+
+    printf("[GAMMA MP] alife_guard: callback pcall shield installed (SendScriptCallback)")
+end
+
+local function uninstall_callback_shield()
+    if _orig_send_callback then
+        _G.SendScriptCallback = _orig_send_callback
+        _orig_send_callback = nil
+    end
+end
+
 local function uninstall_global_overrides()
     if _orig_alife_create then _G.alife_create = _orig_alife_create end
     if _orig_alife_release then _G.alife_release = _orig_alife_release end
@@ -274,13 +321,14 @@ function install()
 
     local mt_ok = install_metatable_patch()
     install_global_overrides()
+    install_callback_shield()
 
     _installed = true
 
     if mt_ok then
-        printf("[GAMMA MP] alife_guard: fully installed (metatable + globals)")
+        printf("[GAMMA MP] alife_guard: fully installed (metatable + globals + callback shield)")
     else
-        printf("[GAMMA MP] alife_guard: partially installed (globals only — metatable patch failed)")
+        printf("[GAMMA MP] alife_guard: partially installed (globals + callback shield — metatable patch failed)")
     end
 
     return mt_ok
@@ -292,6 +340,7 @@ function uninstall()
 
     uninstall_metatable_patch()
     uninstall_global_overrides()
+    uninstall_callback_shield()
 
     _orig_create = nil
     _orig_release = nil
