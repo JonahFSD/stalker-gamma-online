@@ -60,6 +60,29 @@ local _pending_positions = {} -- host_id -> { x, y, z, h }
 local _applying_remote_death = false
 
 -- ============================================================================
+-- Mod Crash Collector
+-- ============================================================================
+-- pcall wraps around spawn and position handlers so mod callback crashes
+-- don't kill the game. Errors are collected and dumped to console.
+
+local _mod_errors = {}       -- { "script:line: error msg", ... }
+local _mod_error_set = {}    -- dedup: error_key -> true
+local _error_dump_timer = 0  -- throttle console dumps
+
+function get_mod_errors()
+    return _mod_errors
+end
+
+local function record_error(context, err)
+    local msg = string.format("[GAMMA MP] MOD CRASH in %s: %s", context, tostring(err))
+    if not _mod_error_set[msg] then
+        _mod_error_set[msg] = true
+        _mod_errors[#_mod_errors + 1] = msg
+        printf(msg)
+    end
+end
+
+-- ============================================================================
 -- ID Mapping
 -- ============================================================================
 
@@ -148,6 +171,13 @@ end
 
 --- Actual spawn logic. Called directly in ACTIVE state, or from tick_sync().
 function do_entity_spawn(data)
+    local ok, err = pcall(do_entity_spawn_inner, data)
+    if not ok then
+        record_error("ENTITY_SPAWN(" .. tostring(data.section) .. ")", err)
+    end
+end
+
+function do_entity_spawn_inner(data)
     local host_id = data.id
     local sim = alife()
     if not sim then return end
@@ -216,6 +246,13 @@ function on_entity_death(data)
     -- Drop during CLEANING — these entities are being wiped anyway
     if _sync_state == STATE_CLEANING then return end
 
+    local ok, err = pcall(on_entity_death_inner, data)
+    if not ok then
+        record_error("ENTITY_DEATH(host=" .. tostring(data.id) .. ")", err)
+    end
+end
+
+function on_entity_death_inner(data)
     local host_id = data.id
     local local_id = resolve_id(host_id)
     if not local_id then
@@ -266,6 +303,13 @@ function on_entity_despawn(data)
     -- Drop during CLEANING — these entities are being wiped anyway
     if _sync_state == STATE_CLEANING then return end
 
+    local ok, err = pcall(on_entity_despawn_inner, data)
+    if not ok then
+        record_error("ENTITY_DESPAWN(host=" .. tostring(data.id) .. ")", err)
+    end
+end
+
+function on_entity_despawn_inner(data)
     local host_id = data.id
     local local_id = resolve_id(host_id)
 
@@ -307,6 +351,13 @@ function on_entity_positions(entities)
 end
 
 function apply_entity_position(host_id, x, y, z, health)
+    local ok, err = pcall(apply_entity_position_inner, host_id, x, y, z, health)
+    if not ok then
+        record_error("ENTITY_POS(host=" .. tostring(host_id) .. ")", err)
+    end
+end
+
+function apply_entity_position_inner(host_id, x, y, z, health)
     if not host_id then return end
 
     local local_id = resolve_id(host_id)
