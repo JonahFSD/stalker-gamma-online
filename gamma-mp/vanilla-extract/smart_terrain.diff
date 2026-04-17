@@ -1,0 +1,156 @@
+--- C:/Users/jonah/Documents/GitHub/stalker-gamma-online/gamma-mp/vanilla-extract/scripts/smart_terrain.script	2026-04-17 17:45:51.781185000 -0500
++++ "C:/GAMMA/mods/G.A.M.M.A. ZCP 1.4 Balanced Spawns/gamedata/scripts/smart_terrain.script"	2026-04-15 01:22:01.649624600 -0500
+@@ -110,7 +110,7 @@
+ end
+ 
+ ----------------------------------------------------------------------------------------------------------------------
+--- Класс "se_smart_terrain". Обеспечивает поддержку smart terrain в ОФЛАЙНЕ.
++-- пїЅпїЅпїЅпїЅпїЅ "se_smart_terrain". пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ smart terrain пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ.
+ ----------------------------------------------------------------------------------------------------------------------
+ class "se_smart_terrain" (cse_alife_smart_zone)
+ function se_smart_terrain:__init(section) super(section)
+@@ -228,7 +228,7 @@
+ 	self.max_population 		= tonumber(xr_logic.pick_section_from_condlist(get_story_object("actor"), nil, ini:r_string_to_condlist(smart_sect,"max_population"))  or 0) or 0
+ 	self.min_population			= tonumber(xr_logic.pick_section_from_condlist(get_story_object("actor"), nil, ini:r_string_to_condlist(smart_sect,"min_population"))  or 0) or 0
+ 	
+-	self.respawn_idle 			= ini:r_float_ex(smart_sect,"respawn_idle") or 43200
++	self.respawn_idle 		= ini:r_float_ex(smart_sect,"respawn_idle") or 43200
+ 	self.respawn_only_level 	= ini:r_bool_ex(smart_sect,"respawn_only_level",false)
+ 	self.respawn_only_smart 	= ini:r_bool_ex(smart_sect,"respawn_only_smart",false)
+ 	self.respawn_point 			= false
+@@ -920,7 +920,7 @@
+ end
+ --]]
+ --*******************************************************
+--- СЕЙВ/ЛОАД
++-- пїЅпїЅпїЅпїЅ/пїЅпїЅпїЅпїЅ
+ --*******************************************************
+ function se_smart_terrain:STATE_Write(packet)
+ 	cse_alife_smart_zone.STATE_Write(self, packet)
+@@ -929,7 +929,7 @@
+ 	-- end
+ 	--set_save_marker(packet, "save", false, "se_smart_terrain")
+ 
+-	-- Информацию о НПС, идущих в смарт
++	-- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ
+ 	local n = table.size(self.arriving_npc)
+ 	utils_data.w_stpk(packet,"u8",n,"arriving_npc count")
+ 	for k,v in pairs(self.arriving_npc) do
+@@ -937,7 +937,7 @@
+ 	end
+ 
+ 
+-	-- Информацию о НПС в смарте
++	-- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅ
+ 	n = table.size(self.npc_info)
+ 	--printf("%s:STATE_Write   JobCount=%s",self:name(),n)
+ 	utils_data.w_stpk(packet,"u8",n,"npc_info count")
+@@ -981,7 +981,7 @@
+ 	self.need_init_npc = true
+ 	--set_save_marker(packet, "load", false, "se_smart_terrain")
+ 
+-	-- Информацию о НПС, идущих в смарт
++	-- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ
+ 	local n = packet:r_u8()
+ 	self.arriving_npc = {}
+ 	for i = 1,n do
+@@ -1158,7 +1158,7 @@
+ 			props = props.."\\nTime_to_spawn:"..tostring(self.respawn_idle - game.get_game_time():diffSec(self.last_respawn_update)).."\\n"
+ 		end
+ 			
+-		--' Добавляем информацию о находящихся в смарте отрядах
++		--' пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ
+ 		for k,v in pairs(SIMBOARD.smarts[self.id].squads) do
+ 			props = props .. tostring(k) .. "\\n"
+ 		end
+@@ -1647,8 +1647,11 @@
+ 		return
+ 	end
+ 	--]]
+-	
+-	if self.last_respawn_update == nil or curr_time:diffSec(self.last_respawn_update) > self.respawn_idle then
++
++	-- SMR
++	local can_respawn = smr_pop.smart_can_respawn(self)
++	-- SMR END
++	if can_respawn then
+ 		self.last_respawn_update = curr_time
+ 		
+ 		iempty_table(available_sects)
+@@ -1658,19 +1661,21 @@
+ 		if not (self.faction) then 
+ 			self.faction = self.default_faction
+ 		end
+-				
++			
+ 		local max_respawn_count
+-		local stalker_pop_factor = ui_options.get("alife/general/alife_stalker_pop")
+-		local monster_pop_factor = ui_options.get("alife/general/alife_mutant_pop")
++		-- SMR
++		local stalker_pop_factor = smr_pop.get_stalker_pop_factor()
++		local monster_pop_factor = smr_pop.get_monster_pop_factor()
++		-- SMR END
+ 		for k,v in pairs(self.respawn_params) do
+ 			if (v.num and self.already_spawned[k] and self.already_spawned[k].num) then
+ 				if (self.faction_controlled == nil) or (self.faction ~= nil and v.faction == self.faction) then
+ 				
+ 					max_respawn_count = tonumber(xr_logic.pick_section_from_condlist(db.actor, self,v.num) or 0)
+-					
++
+ 					-- Tronex
+ 					-- Safer check for common squads
+-					-- DPH
++					-- DPH / SMR
+ 					-- This doesn't work. "k" is the name of the spawn section, not a squad section
+ 					if (v["squads"]) then
+ 						-- Just take the first squad section to determine type. Not correct, but accurate in almost all cases
+@@ -1684,7 +1689,9 @@
+ 							end
+ 						end
+ 					end
+-					
++					-- DPH / SMR END
++
++
+ 					-- modifier for spawn chances
+ 					if max_respawn_count < 1 then
+ 						local respawn_chance = max_respawn_count*100
+@@ -1709,13 +1716,12 @@
+ 			
+ 			if (sect_to_spawn_params.squads) then
+ 				local squad
+-				if (IsSurvivalMode() and math.random(1,100) < 90) then
+-					local t = {"simulation_zombie","simulation_zombie","simulation_zombie","simulation_zombie","simulation_zombie","zombied_sim_squad_novice","zombied_sim_squad_advanced","zombied_sim_squad_veteran","simulation_fracture","simulation_snork","simulation_zombie_blind_3zomb_civ","simulation_zombie_blind_3zomb"}
+-					squad = SIMBOARD:create_squad(self, t[math.random(#t)])
+-				else 
+-					squad = has_alife_info("actor_made_wish_for_control") and SIMBOARD:create_squad(self, "simulation_controller_psy") or SIMBOARD:create_squad(self, sect_to_spawn_params.squads[math.random(1,#sect_to_spawn_params.squads)])
+-				end
++				local random_squad = sect_to_spawn_params.squads[math.random(1,#sect_to_spawn_params.squads)]
+ 				
++				-- SMR
++				squad = smr_pop.smr_handle_spawn(random_squad, self)
++				-- SMR END
++
+ 				if (squad) then
+ 					squad.respawn_point_id = self.id
+ 					squad.respawn_point_prop_section = sect_to_spawn
+@@ -1723,9 +1729,18 @@
+ 						SIMBOARD:setup_squad_and_group(m.object)
+ 					end
+ 				else
+-					printe("!ERROR: call respawn failed for %s, check squad descriptions",sect_to_spawn)
++					-- SMR: just fills up the log needlessly in our case.
++					--printe("!ERROR: call respawn failed for %s, check squad descriptions",sect_to_spawn)
+ 					return
+ 				end
++
++				-- SMR
++				if (squad) then
++					smr_debug.get_log().info("smart", "setting up civil war relations for squad %s (smart: %s)", squad:section_name(), self:name())
++					smr_civil_war.setup_civil_war_squad(squad, self:name())
++				end
++				-- SMR END
++
+ 			elseif (sect_to_spawn_params.helicopter and ui_options.get("alife/general/heli_spawn")) then
+ 				local heli = sect_to_spawn_params.helicopter[math.random(1,#sect_to_spawn_params.helicopter)]
+ 				if (heli) then --if (heli and self.online) then
