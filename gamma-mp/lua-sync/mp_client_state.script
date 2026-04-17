@@ -319,7 +319,7 @@ function apply_entity_position(host_id, x, y, z, health)
         obj:force_set_position(target_pos)
 
         -- Update health if significantly different
-        if health and obj:alive() then
+        if health and type(obj.alive) == "function" and obj:alive() then
             local current_h = obj:health()
             if math.abs(current_h - health) > 0.05 then
                 -- TODO: Phase 2 - smooth health transitions

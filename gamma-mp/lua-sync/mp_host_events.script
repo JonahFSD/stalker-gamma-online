@@ -322,7 +322,7 @@ function send_snapshots()
             -- Belt-and-suspenders: skip puppet entities from EP broadcasts
             if not (mp_puppet and mp_puppet.is_puppet and mp_puppet.is_puppet(id)) then
                 local se_obj = sim:object(id)
-                if se_obj and se_obj:alive() then
+                if se_obj and type(se_obj.alive) == "function" and se_obj:alive() then
                     local obj = level.object_by_id(id)
                     if obj then
                         local pos = obj:position()
