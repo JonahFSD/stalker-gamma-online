@@ -58,7 +58,7 @@ Use this to jump directly to the right file. Don't grep for things that are list
 | `gns_bridge_luabind.cpp` | Engine integration — loads DLL, registers `gns.*` namespace in Lua | `LoadGnsBridge()` uses `GetModuleFileNameA` for absolute path. Registers all gns_* functions under Lua `gns` namespace via luabind. |
 | `gns_bridge_poll.cpp` | Lua-friendly poll wrappers | Returns Lua tables from `gns.poll()` and `gns.poll_events()` |
 
-### Engine Patches (`gamma-mp/engine-patch/`) — 8 patches, all applied
+### Engine Patches (`gamma-mp/engine-patch/`) — 9 patches, all applied
 
 Format note: patches 1–7 are prose-format ("FIND / REPLACE" narrative). Patch 0008 onward uses proper `git format-patch` output (git-am-compatible).
 
@@ -72,6 +72,7 @@ Format note: patches 1–7 are prose-format ("FIND / REPLACE" narrative). Patch 
 | `script_game_object3.cpp.patch` | `SetBodyYaw` implementation — writes `movement().m_body.current.yaw` and `movement().m_body.target.yaw`. |
 | `script_game_object_script3.cpp.patch` | luabind registration `set_body_yaw` (~line 480). |
 | `0008_script_engine_soft_fail.patch` | `lua_pcall_failed` soft-fails on client via `mp_client_mode` — converts engine-fatal Lua errors into rate-limited log lines (20/sig for own sync layer, 5/sig for mods; signature is `short_src:currentline`; tags `[MP-OWN]`/`[MP-MOD]`). Null-safe via `get_alife()` pointer accessor. Keeps dummy `se_obj` gaps and other client-side mod failures from killing the session. |
+| `0009_script_engine_soft_fail_extend.patch` | Extends 0008 to `lua_error` and `lua_cast_failed` — the other two luabind error callback surfaces (`set_error_callback` and `set_cast_failed_callback`). Factors the soft-fail logic into a shared file-static helper; rate-limit map is shared across all three sites so the same error counts once regardless of dispatch path. Also guards `lua_tostring(L,-1)` with `lua_isstring` in `lua_error`. |
 
 ### Docs & Prompts (`gamma-mp/`)
 

@@ -1,0 +1,190 @@
+From 6f48165561f1e2dd7da65399d9d687affbd00072 Mon Sep 17 00:00:00 2001
+From: Jonah-Elliott <jonahwelliott@gmail.com>
+Date: Fri, 17 Apr 2026 21:30:36 -0500
+Subject: [PATCH] feat(engine): extend soft-fail to lua_error and
+ lua_cast_failed
+
+Factor the mp_client soft-fail logic out of lua_pcall_failed into a
+shared file-static helper and invoke it from lua_error (luabind
+set_error_callback path) and lua_cast_failed (luabind
+set_cast_failed_callback path). Host and singleplayer behavior
+unchanged - Debug.fatal still fires when alife is null or
+mp_client_mode is false.
+
+Previously only lua_pcall_failed was shielded. Live testing showed
+the same client-side Lua error (smr_pop.script:1301 "attempt to
+call a nil value") still fatals - it dispatches through
+set_error_callback into lua_error, not through set_pcall_callback.
+lua_error is the default luabind error path for most engine-
+initiated script calls; pcall_failed is the minority path.
+
+Also guard lua_tostring(L, -1) with lua_isstring in lua_error,
+matching the discipline already present in lua_pcall_failed.
+
+Rate-limit map is shared across all three callback surfaces so the
+same error dispatched through multiple paths counts once.
+---
+ src/xrServerEntities/script_engine.cpp | 123 +++++++++++++++----------
+ 1 file changed, 73 insertions(+), 50 deletions(-)
+
+diff --git a/src/xrServerEntities/script_engine.cpp b/src/xrServerEntities/script_engine.cpp
+index c8eb8f97..19dc194d 100644
+--- a/src/xrServerEntities/script_engine.cpp
++++ b/src/xrServerEntities/script_engine.cpp
+@@ -45,6 +45,66 @@ extern Flags32 psAI_Flags;
+ void jit_command(lua_State*, LPCSTR);
+ #endif
+ 
++// GAMMA MP: shared soft-fail helper for all three luabind error callback
++// surfaces (lua_pcall_failed, lua_error, lua_cast_failed).
++// Returns true if soft-fail fired (caller must NOT call Debug.fatal).
++// Returns false if not in mp_client_mode (caller must escalate to Debug.fatal).
++namespace {
++static bool try_mp_client_soft_fail(lua_State* L, LPCSTR error_msg)
++{
++    const CALifeSimulator* alife_ptr = ai().get_alife();
++    const bool mp_client = alife_ptr && alife_ptr->mp_client_mode();
++    if (!mp_client)
++        return false;
++
++    // Locate the top Lua (non-C) frame for the signature key.
++    const char* src = "?";
++    int line_no = 0;
++    if (L) {
++        lua_Debug di;
++        memset(&di, 0, sizeof(di));
++        for (int i = 0; lua_getstack(L, i, &di); ++i) {
++            lua_getinfo(L, "Sl", &di);
++            if (di.what && xr_strcmp(di.what, "C") != 0 && di.currentline > 0) {
++                src = (di.short_src[0] ? di.short_src : "?");
++                line_no = di.currentline;
++                break;
++            }
++        }
++    }
++
++    const bool own_layer = (strstr(src, "gamma-mp") != nullptr) ||
++                           (strncmp(src, "mp_", 3) == 0) ||
++                           (strstr(src, "\\mp_") != nullptr) ||
++                           (strstr(src, "/mp_") != nullptr);
++    const int threshold = own_layer ? 20 : 5;
++    const char* tag = own_layer ? "[MP-OWN]" : "[MP-MOD]";
++
++    // File-static rate-limit map shared across all three callback surfaces
++    // so the same error dispatched through multiple paths counts once.
++    // Lua is single-threaded — no lock needed.
++    static std::unordered_map<std::string, int> s_mp_fail_counts;
++
++    char key_buf[512];
++    xr_sprintf(key_buf, sizeof(key_buf), "%s:%d", src, line_no);
++    std::string key(key_buf);
++
++    int& count = s_mp_fail_counts[key];
++    count += 1;
++
++    const char* safe_msg = error_msg ? error_msg : "(null)";
++    if (count <= threshold) {
++        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
++            "! %s %s:%d | %s", tag, src, line_no, safe_msg);
++    } else if (count == threshold + 1) {
++        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
++            "! %s %s:%d | SILENCED (threshold %d reached, further occurrences suppressed)",
++            tag, src, line_no, threshold);
++    }
++    return true;
++}
++} // anonymous namespace
++
+ #if defined(USE_DEBUGGER) && defined(USE_LUA_STUDIO)
+ static void log_callback			(LPCSTR message)
+ {
+@@ -226,11 +286,13 @@ void CScriptEngine::lua_error(lua_State* L)
+ 		}
+ 	}
+ 
+-	auto error_str = make_string("\n%s\n\nLUA error: %s\n\nCheck log for details", lua_error_line.c_str(), lua_tostring(L, -1));
++	auto error_str = make_string("\n%s\n\nLUA error: %s\n\nCheck log for details", lua_error_line.c_str(), lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
+ 	LPCSTR error_msg = error_str.c_str();
+ 
+ #if !XRAY_EXCEPTIONS
+-	Debug.fatal(DEBUG_INFO, error_msg);
++	if (!try_mp_client_soft_fail(L, error_msg)) {
++		Debug.fatal(DEBUG_INFO, error_msg);
++	}
+ #else
+     throw					lua_tostring(L,-1);
+ #endif
+@@ -285,53 +347,7 @@ int CScriptEngine::lua_pcall_failed(lua_State* L)
+ 	LPCSTR error_msg = error_str.c_str();
+ 
+ #if !XRAY_EXCEPTIONS
+-	// GAMMA MP: soft-fail on client — log rate-limited, do not fatal.
+-	// Host and SP still go fatal via Debug.fatal in the else branch below.
+-	const CALifeSimulator* alife_ptr = ai().get_alife();
+-	const bool mp_client = alife_ptr && alife_ptr->mp_client_mode();
+-
+-	if (mp_client) {
+-		// Locate the top Lua (non-C) frame for the signature key.
+-		lua_Debug di;
+-		memset(&di, 0, sizeof(di));
+-		const char* src = "?";
+-		int line_no = 0;
+-		for (int i = 0; lua_getstack(L, i, &di); ++i) {
+-			lua_getinfo(L, "Sl", &di);
+-			if (di.what && xr_strcmp(di.what, "C") != 0 && di.currentline > 0) {
+-				src = (di.short_src[0] ? di.short_src : "?");
+-				line_no = di.currentline;
+-				break;
+-			}
+-		}
+-
+-		const bool own_layer = (strstr(src, "gamma-mp") != nullptr) ||
+-		                       (strncmp(src, "mp_", 3) == 0) ||
+-		                       (strstr(src, "\\mp_") != nullptr) ||
+-		                       (strstr(src, "/mp_") != nullptr);
+-		const int threshold = own_layer ? 20 : 5;
+-		const char* tag = own_layer ? "[MP-OWN]" : "[MP-MOD]";
+-
+-		// File-static rate-limit map. Lua is single-threaded — no lock needed.
+-		static std::unordered_map<std::string, int> s_mp_fail_counts;
+-
+-		char key_buf[512];
+-		xr_sprintf(key_buf, sizeof(key_buf), "%s:%d", src, line_no);
+-		std::string key(key_buf);
+-
+-		int& count = s_mp_fail_counts[key];
+-		count += 1;
+-
+-		if (count <= threshold) {
+-			ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
+-				"! %s %s:%d | %s", tag, src, line_no, error_msg);
+-		} else if (count == threshold + 1) {
+-			ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError,
+-				"! %s %s:%d | SILENCED (threshold %d reached, further occurrences suppressed)",
+-				tag, src, line_no, threshold);
+-		}
+-		// Soft-fail: fall through without calling Debug.fatal.
+-	} else {
++	if (!try_mp_client_soft_fail(L, error_msg)) {
+ 		Debug.fatal(DEBUG_INFO, error_msg);
+ 	}
+ #endif
+@@ -344,7 +360,14 @@ void lua_cast_failed(lua_State* L, LUABIND_TYPE_INFO info)
+ {
+ 	CScriptEngine::print_output(L, "", LUA_ERRRUN);
+ 
+-	Debug.fatal(DEBUG_INFO, "LUA error: cannot cast lua value to %s", info->name());
++	string256 cast_msg;
++	xr_sprintf(cast_msg, sizeof(cast_msg),
++		"LUA error: cannot cast lua value to %s",
++		(info ? info->name() : "?"));
++
++	if (!try_mp_client_soft_fail(L, cast_msg)) {
++		Debug.fatal(DEBUG_INFO, "LUA error: cannot cast lua value to %s", info->name());
++	}
+ }
+ 
+ void CScriptEngine::setup_callbacks()
+-- 
+2.53.0.windows.3
+

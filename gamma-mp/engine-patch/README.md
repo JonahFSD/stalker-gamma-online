@@ -46,10 +46,13 @@ Phase 1 (patches 5–7, prose FIND/REPLACE format):
 Phase 1 (patch 8, proper git-format-patch output):
 8. `src/xrServerEntities/script_engine.cpp` — soft-fail `lua_pcall_failed` when `ai().get_alife()->mp_client_mode()` is true. Rate limits: 20/signature for `gamma-mp`/`mp_*` sources, 5/signature for mods. Tags `[MP-OWN]`/`[MP-MOD]` for grep. Null-safe via `get_alife()` pointer accessor.
 
+Phase 1 (patch 9, proper git-format-patch output):
+9. `src/xrServerEntities/script_engine.cpp` — extends patch 8's soft-fail to `lua_error` (luabind `set_error_callback` path) and `lua_cast_failed` (luabind `set_cast_failed_callback` path). Factors the soft-fail block into a shared file-static helper `try_mp_client_soft_fail`; rate-limit map is shared across all three sites so the same error counts once regardless of dispatch path. Also guards `lua_tostring(L, -1)` with `lua_isstring` in `lua_error`. Without this, client-side Lua errors that dispatch through `set_error_callback` (the default path for engine-initiated calls) still fatal even on `mp_client_mode` clients.
+
 ## How to Apply
 
 These are provided as both readable diffs and copy-paste patches.
 See the .patch files in this directory.
 
 Format note: patches 1–7 are prose-format ("FIND / REPLACE" narrative) — apply by hand.
-Patch `0008_script_engine_soft_fail.patch` is proper `git format-patch` output and is `git am`-compatible.
+Patches `0008_script_engine_soft_fail.patch` and `0009_script_engine_soft_fail_extend.patch` are proper `git format-patch` output and are `git am`-compatible.
