@@ -199,8 +199,8 @@ function build_entity_registry()
         end
     end
 
-    printf("[GAMMA MP] Entity registry built: %d online entities tracked (of %d total)",
-        _tracked_count, total_scanned)
+    printf(string.format("[GAMMA MP] Entity registry built: %d online entities tracked (of %d total)",
+        _tracked_count, total_scanned))
 end
 
 -- ============================================================================
@@ -474,8 +474,8 @@ function on_host_level_load()
 
     if gns.get_client_count() == 0 then return end
 
-    printf("[GAMMA MP] Host level transition: %s -> %s (%d clients)",
-        prev_level, current_level, gns.get_client_count())
+    printf(string.format("[GAMMA MP] Host level transition: %s -> %s (%d clients)",
+        prev_level, current_level, gns.get_client_count()))
 
     -- Notify all clients to clear stale state.
     -- Sent before FULL_STATE so clients process the reset first (reliable
@@ -551,7 +551,7 @@ local function _tick_full_state_connection(conn_id)
             factor = level.get_time_factor(),
         })
         _full_state_pending[conn_id] = nil
-        printf("[GAMMA MP] Full state stream complete to client %d", conn_id)
+        printf(string.format("[GAMMA MP] Full state stream complete to client %d", conn_id))
     end
 end
 
@@ -560,8 +560,8 @@ end
 --- then queues entity spawns for batched delivery via tick_full_state().
 function send_full_state(conn_id)
     ensure_msg()
-    printf("[GAMMA MP] Starting full state stream to client %d (%d entities)",
-        conn_id, _tracked_count)
+    printf(string.format("[GAMMA MP] Starting full state stream to client %d (%d entities)",
+        conn_id, _tracked_count))
 
     -- Track as a connected client so on_host_level_load() can reach them
     _connected_clients[conn_id] = true
@@ -601,7 +601,7 @@ end
 function cancel_full_state(conn_id)
     if _full_state_pending[conn_id] then
         _full_state_pending[conn_id] = nil
-        printf("[GAMMA MP] Full state stream cancelled for client %d", conn_id)
+        printf(string.format("[GAMMA MP] Full state stream cancelled for client %d", conn_id))
     end
     _connected_clients[conn_id] = nil
 end

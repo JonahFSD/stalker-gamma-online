@@ -140,7 +140,7 @@ function on_local_entity_registered(se_obj)
             _pending_spawns[key] = nil
         end
         map_id(host_id, se_obj.id)
-        printf("[GAMMA MP] ID mapped: host %d -> local %d (%s)", host_id, se_obj.id, section)
+        printf(string.format("[GAMMA MP] ID mapped: host %d -> local %d (%s)", host_id, se_obj.id, section))
 
         -- Flush any position update that arrived via UDP before this spawn (Bug #13)
         local pending_pos = _pending_positions[host_id]
@@ -222,7 +222,7 @@ function do_entity_spawn_inner(data)
                 local_parent)
         else
             -- Parent not yet created; spawn in world, will get picked up later
-            printf("[GAMMA MP] WARNING: Parent %d not mapped, spawning in world", parent_id)
+            printf(string.format("[GAMMA MP] WARNING: Parent %d not mapped, spawning in world", parent_id))
             mp_alife_guard.internal_create(sim, data.section, pos,
                 data.lvid or 0,
                 data.gvid or 0)
@@ -256,7 +256,7 @@ function on_entity_death_inner(data)
     local host_id = data.id
     local local_id = resolve_id(host_id)
     if not local_id then
-        printf("[GAMMA MP] WARNING: Death for unmapped host entity %d", host_id)
+        printf(string.format("[GAMMA MP] WARNING: Death for unmapped host entity %d", host_id))
         return
     end
 
@@ -411,7 +411,7 @@ function on_squad_assign(data)
 
     local local_squad_id = resolve_id(data.squad_id)
     if not local_squad_id then
-        printf("[GAMMA MP] WARNING: Squad assign for unmapped host entity %d", data.squad_id)
+        printf(string.format("[GAMMA MP] WARNING: Squad assign for unmapped host entity %d", data.squad_id))
         return
     end
 
@@ -486,7 +486,7 @@ function on_full_state(data)
     _spawn_queue_index = 0
 
     if data.entity_count then
-        printf("[GAMMA MP] Expecting %d entities", data.entity_count)
+        printf(string.format("[GAMMA MP] Expecting %d entities", data.entity_count))
     end
 
     -- Build list of all existing entities to delete (except the player).
@@ -512,7 +512,7 @@ function on_full_state(data)
     end
 
     local count = #_cleanup_ids
-    printf("[GAMMA MP] Cleanup: %d pre-existing entities to remove (player excluded)", count)
+    printf(string.format("[GAMMA MP] Cleanup: %d pre-existing entities to remove (player excluded)", count))
 
     if count == 0 then
         -- Nothing to clean, go straight to syncing.
@@ -524,8 +524,8 @@ function on_full_state(data)
         printf("[GAMMA MP] No cleanup needed, entering SYNCING state")
     else
         _sync_state = STATE_CLEANING
-        printf("[GAMMA MP] Entering CLEANING state (%d entities, ~%d frames)",
-            count, math.ceil(count / _cleanup_batch))
+        printf(string.format("[GAMMA MP] Entering CLEANING state (%d entities, ~%d frames)",
+            count, math.ceil(count / _cleanup_batch)))
     end
 end
 
@@ -603,8 +603,8 @@ function tick_cleanup()
         _cleanup_index = 0
         _spawn_queue_index = 1
         _sync_state = STATE_SYNCING
-        printf("[GAMMA MP] Cleanup complete. Entering SYNCING state (%d queued spawns)",
-            #_spawn_queue)
+        printf(string.format("[GAMMA MP] Cleanup complete. Entering SYNCING state (%d queued spawns)",
+            #_spawn_queue))
     end
 end
 
@@ -623,8 +623,8 @@ function tick_sync()
         _spawn_queue = {}
         _spawn_queue_index = 0
         _sync_state = STATE_ACTIVE
-        printf("[GAMMA MP] Sync complete. Entering ACTIVE state (%d entities, %d mappings)",
-            get_entity_count(), get_id_map_count())
+        printf(string.format("[GAMMA MP] Sync complete. Entering ACTIVE state (%d entities, %d mappings)",
+            get_entity_count(), get_id_map_count()))
 
         if db.actor then
             news_manager.send_tip(db.actor,
@@ -717,10 +717,10 @@ end
 
 --- Debug: dump the ID mapping table
 function dump_id_map()
-    printf("[GAMMA MP] === ID Mapping Table (%d entries) ===", get_id_map_count())
+    printf(string.format("[GAMMA MP] === ID Mapping Table (%d entries) ===", get_id_map_count()))
     for host_id, local_id in pairs(_host_to_local) do
         local info = _network_entities[host_id]
         local section = info and info.section or "?"
-        printf("  host %d -> local %d (%s)", host_id, local_id, section)
+        printf(string.format("  host %d -> local %d (%s)", host_id, local_id, section))
     end
 end

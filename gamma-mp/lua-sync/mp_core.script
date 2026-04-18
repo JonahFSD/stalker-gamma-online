@@ -65,13 +65,13 @@ function mp_host(port)
 
     local result = gns.host(port)
     if result ~= 0 then
-        printf("[GAMMA MP] ERROR: Failed to start hosting on port %d", port)
+        printf(string.format("[GAMMA MP] ERROR: Failed to start hosting on port %d", port))
         return false
     end
 
     _is_host = true
     _host_port = port
-    printf("[GAMMA MP] Hosting on port %d", port)
+    printf(string.format("[GAMMA MP] Hosting on port %d", port))
 
     -- Register host-side event capture
     mp_host_events.register_callbacks()
@@ -108,7 +108,7 @@ function mp_connect(ip, port)
 
     local result = gns.connect(ip, port)
     if result ~= 0 then
-        printf("[GAMMA MP] ERROR: Failed to initiate connection to %s:%d", ip, port)
+        printf(string.format("[GAMMA MP] ERROR: Failed to initiate connection to %s:%d", ip, port))
         return false
     end
 
@@ -119,7 +119,7 @@ function mp_connect(ip, port)
     _host_ip = ip
     _host_port = port
 
-    printf("[GAMMA MP] Connecting to %s:%d (awaiting confirmation)...", ip, port)
+    printf(string.format("[GAMMA MP] Connecting to %s:%d (awaiting confirmation)...", ip, port))
     return true
 end
 
@@ -405,16 +405,16 @@ function mp_status()
     printf("  Host: %s", tostring(_is_host))
     printf("  Client: %s", tostring(_is_client))
     if _is_host then
-        printf("  Port: %d", _host_port)
-        printf("  Clients: %d", gns.get_client_count())
-        printf("  Tracked entities: %d", mp_host_events.get_tracked_count())
+        printf(string.format("  Port: %d", _host_port))
+        printf(string.format("  Clients: %d", gns.get_client_count()))
+        printf(string.format("  Tracked entities: %d", mp_host_events.get_tracked_count()))
     end
     if _is_client then
-        printf("  Connected to: %s:%d", _host_ip or "?", _host_port)
-        printf("  Network entities: %d", mp_client_state.get_entity_count())
-        printf("  ID mappings: %d", mp_client_state.get_id_map_count())
+        printf(string.format("  Connected to: %s:%d", _host_ip or "?", _host_port))
+        printf(string.format("  Network entities: %d", mp_client_state.get_entity_count()))
+        printf(string.format("  ID mappings: %d", mp_client_state.get_id_map_count()))
         local bc, br = mp_alife_guard.get_block_counts()
-        printf("  Blocked creates: %d, releases: %d", bc, br)
+        printf(string.format("  Blocked creates: %d, releases: %d", bc, br))
     end
 end
 

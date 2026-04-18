@@ -87,7 +87,7 @@ end
 local function blocked_create(self, ...)
     _block_count_create = _block_count_create + 1
     if _block_count_create <= _LOG_LIMIT then
-        printf("[GAMMA MP] BLOCKED alife():create() on client (call #%d)", _block_count_create)
+        printf(string.format("[GAMMA MP] BLOCKED alife():create() on client (call #%d)", _block_count_create))
         if _block_count_create == _LOG_LIMIT then
             printf("[GAMMA MP] (further create blocks will be silent)")
         end
@@ -98,7 +98,7 @@ end
 local function blocked_release(self, ...)
     _block_count_release = _block_count_release + 1
     if _block_count_release <= _LOG_LIMIT then
-        printf("[GAMMA MP] BLOCKED alife():release() on client (call #%d)", _block_count_release)
+        printf(string.format("[GAMMA MP] BLOCKED alife():release() on client (call #%d)", _block_count_release))
         if _block_count_release == _LOG_LIMIT then
             printf("[GAMMA MP] (further release blocks will be silent)")
         end

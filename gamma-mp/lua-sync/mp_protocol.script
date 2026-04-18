@@ -167,7 +167,7 @@ function on_message(conn_id, raw_data, size)
 
     local msg_type, data = deserialize(raw_data)
     if not msg_type then
-        printf("[GAMMA MP] WARNING: Failed to deserialize message from %d", conn_id)
+        printf(string.format("[GAMMA MP] WARNING: Failed to deserialize message from %d", conn_id))
         return
     end
 
@@ -239,7 +239,7 @@ function dispatch_host(msg_type, data, conn_id)
         mp_host_events.on_client_player_stats(conn_id, data)
 
     else
-        printf("[GAMMA MP] Unknown message type from client %d: %s", conn_id, msg_type)
+        printf(string.format("[GAMMA MP] Unknown message type from client %d: %s", conn_id, msg_type))
     end
 end
 

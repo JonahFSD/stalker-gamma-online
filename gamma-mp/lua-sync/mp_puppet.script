@@ -60,13 +60,13 @@ end
 --- @param pos      vector  World position to spawn at
 function spawn_puppet(conn_id, pos)
     if _puppets[conn_id] then
-        printf("[GAMMA MP PUPPET] Already have puppet for conn %d, skipping spawn", conn_id)
+        printf(string.format("[GAMMA MP PUPPET] Already have puppet for conn %d, skipping spawn", conn_id))
         return
     end
 
     local sim = alife()
     if not sim then
-        printf("[GAMMA MP PUPPET] ERROR: alife() not available for conn %d puppet spawn", conn_id)
+        printf(string.format("[GAMMA MP PUPPET] ERROR: alife() not available for conn %d puppet spawn", conn_id))
         return
     end
 
@@ -87,13 +87,13 @@ function spawn_puppet(conn_id, pos)
     _spawning_puppet = false
 
     if not ok then
-        printf("[GAMMA MP PUPPET] ERROR: create threw for conn %d: %s", conn_id, tostring(err))
+        printf(string.format("[GAMMA MP PUPPET] ERROR: create threw for conn %d: %s", conn_id, tostring(err)))
         return
     end
 
     local se_id = _last_spawned_puppet_id
     if not se_id then
-        printf("[GAMMA MP PUPPET] ERROR: create callback never fired for conn %d", conn_id)
+        printf(string.format("[GAMMA MP PUPPET] ERROR: create callback never fired for conn %d", conn_id))
         return
     end
 
@@ -117,8 +117,8 @@ function spawn_puppet(conn_id, pos)
         _puppets[conn_id].needs_infoportion = true
     end
 
-    printf("[GAMMA MP PUPPET] Spawned puppet for conn %d at (%.1f, %.1f, %.1f) se_id=%d",
-        conn_id, pos.x, pos.y, pos.z, se_id)
+    printf(string.format("[GAMMA MP PUPPET] Spawned puppet for conn %d at (%.1f, %.1f, %.1f) se_id=%d",
+        conn_id, pos.x, pos.y, pos.z, se_id))
 end
 
 --- Remove the puppet for a disconnected player.
@@ -142,7 +142,7 @@ function despawn_puppet(conn_id)
     _pending_infoportion[se_id] = nil
     _puppets[conn_id] = nil
 
-    printf("[GAMMA MP PUPPET] Despawned puppet for conn %d (se_id=%d)", conn_id, se_id)
+    printf(string.format("[GAMMA MP PUPPET] Despawned puppet for conn %d (se_id=%d)", conn_id, se_id))
 end
 
 --- Apply position/heading/animation state from a PP message to the puppet NPC.
