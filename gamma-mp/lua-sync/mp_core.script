@@ -135,6 +135,20 @@ function mp_activate_client_mode()
         printf("[GAMMA MP] A-Life suppressed (client mode)")
     end
 
+    -- Strategy C2 defense-in-depth: downgrade CALifeStoryRegistry::add's
+    -- duplicate-story_id assert to a non-fatal warning. C2's pre-apply de-dup
+    -- in mp_client_state should prevent duplicates from being created in the
+    -- first place — this CVar is a backstop for any case the de-dup misses
+    -- (e.g. story_id missing from payload, race during CLEANING).
+    -- Default user.ltx ships with this set to 1 (verified 2026-04-17).
+    if get_console then
+        local cons = get_console()
+        if cons then
+            cons:execute("duplicate_story_id_crash 0")
+            printf("[GAMMA MP] duplicate_story_id_crash 0 (C2 backstop)")
+        end
+    end
+
     -- Register spawn interception callback for ID mapping
     RegisterScriptCallback("server_entity_on_register", on_client_entity_registered)
 

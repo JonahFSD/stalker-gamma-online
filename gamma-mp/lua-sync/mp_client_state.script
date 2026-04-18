@@ -114,6 +114,24 @@ function reverse_id(local_id)
     return _local_to_host[local_id] or nil
 end
 
+--- Strategy C2: pre-apply de-dup by story_id.
+--- The client's native A-Life populates from all.spawn BEFORE set_mp_client_mode
+--- can be set (that flag only gates per-frame update(), not CALifeStorageManager::load).
+--- So every story_id-bearing entity already exists locally when the host streams
+--- ENTITY_SPAWN. Calling alife():create() with the same section would trigger
+--- CALifeStoryRegistry::add's R_ASSERT4 (engine crash) or a split-brain registry.
+---
+--- Instead: look up the native entity by story_id and map host_id → existing local_id.
+--- Returns local_id if a native entity already exists for this story_id, else nil.
+local function try_match_existing_by_story_id(sim, story_id)
+    if not sim or not story_id then return nil end
+    if story_id == 0 or story_id == 4294967295 then return nil end
+    local ok, se = pcall(function() return sim:story_object(story_id) end)
+    if not ok or not se then return nil end
+    if not se.id then return nil end
+    return se.id
+end
+
 -- ============================================================================
 -- Spawn Interception
 -- ============================================================================
@@ -194,6 +212,26 @@ function do_entity_spawn_inner(data)
             -- Mapping is stale, clean it up
             unmap_id(host_id)
         end
+    end
+
+    -- Strategy C2: if this host entity has a story_id, the client's native
+    -- alife (populated from all.spawn before set_mp_client_mode took effect)
+    -- already holds a matching entity. Map host_id → existing local entity
+    -- and skip the alife():create() call that would collide in the engine's
+    -- CALifeStoryRegistry. Position will snap on the next EP update.
+    local existing_local = try_match_existing_by_story_id(sim, data.story_id)
+    if existing_local then
+        map_id(host_id, existing_local)
+        _network_entities[host_id] = data
+        -- Flush any pending position update that arrived before the spawn
+        local pending_pos = _pending_positions[host_id]
+        if pending_pos then
+            apply_entity_position(host_id, pending_pos.x, pending_pos.y, pending_pos.z, pending_pos.h)
+            _pending_positions[host_id] = nil
+        end
+        printf(string.format("[GAMMA MP] story_id dedup: host %d -> local %d (story_id=%d, %s)",
+            host_id, existing_local, data.story_id, tostring(data.section)))
+        return
     end
 
     -- Create the entity

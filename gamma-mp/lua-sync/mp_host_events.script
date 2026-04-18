@@ -264,6 +264,14 @@ function on_entity_register(se_obj, source_tag)
         data.parent_id = se_obj.parent_id  -- also host's native ID
     end
 
+    -- Strategy C2: include story_id so the client can de-dup against entities
+    -- its native alife already populated from all.spawn (pre-set_mp_client_mode).
+    -- INVALID_STORY_ID is ALife::_STORY_ID(-1) = u32(-1) = 4294967295.
+    local sid = se_obj.m_story_id
+    if sid and sid ~= 4294967295 and sid ~= 0 then
+        data.story_id = sid
+    end
+
     mp_protocol.broadcast_event(MSG.ENTITY_SPAWN, data)
 end
 
@@ -531,6 +539,11 @@ local function _tick_full_state_connection(conn_id)
             }
             if se_obj.parent_id and se_obj.parent_id ~= 65535 then
                 data.parent_id = se_obj.parent_id
+            end
+            -- Strategy C2: include story_id for client-side de-dup (see on_entity_register).
+            local sid = se_obj.m_story_id
+            if sid and sid ~= 4294967295 and sid ~= 0 then
+                data.story_id = sid
             end
             mp_protocol.send_event(conn_id, MSG.ENTITY_SPAWN, data)
             sent = sent + 1
